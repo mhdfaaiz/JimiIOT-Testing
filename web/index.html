@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>JC371 / JimiIoT — GPS &amp; Live Monitor</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; }
+      body {
+        font-family: system-ui, Arial, sans-serif;
+        margin: 0; padding: 16px;
+        background: #f0f2f5; color: #222;
+      }
+      h1 { margin: 0 0 16px; font-size: 1.4rem; }
+      h2 { margin: 0 0 10px; font-size: 1.1rem; color: #444; }
+      .row { display: flex; gap: 16px; flex-wrap: wrap; }
+      .card {
+        background: #fff; border: 1px solid #ddd;
+        border-radius: 10px; padding: 16px; flex: 1; min-width: 300px;
+      }
+      .field { display: flex; justify-content: space-between; margin: 6px 0; font-size: 0.9rem; }
+      .label { color: #888; }
+      .value { font-weight: 600; }
+      .status-bar {
+        display: flex; align-items: center; gap: 8px;
+        font-size: 0.82rem; padding: 6px 0; color: #555;
+      }
+      .dot {
+        width: 10px; height: 10px; border-radius: 50%;
+        background: #ccc; flex-shrink: 0;
+      }
+      .dot.connected { background: #2ecc71; }
+      .dot.error     { background: #e74c3c; }
+      pre {
+        background: #f7f7f7; border: 1px solid #e5e5e5;
+        border-radius: 6px; padding: 10px; margin-top: 10px;
+        font-size: 0.78rem; overflow: auto; max-height: 240px;
+        white-space: pre-wrap; word-break: break-all;
+      }
+      .badge {
+        display: inline-block; padding: 2px 8px; border-radius: 12px;
+        font-size: 0.75rem; font-weight: 700;
+      }
+      .badge.on  { background: #d4f8e8; color: #1a7e4a; }
+      .badge.off { background: #fde8e8; color: #a33; }
+      .badge.fix { background: #d4e8f8; color: #1a4a7e; }
+      .badge.nofix { background: #f8f4d4; color: #7e5a1a; }
+      #nodata { color: #aaa; font-style: italic; font-size: 0.9rem; }
+    </style>
+  </head>
+  <body>
+    <h1>🛰️ JC371 / JimiIoT — GPS Tracking &amp; Live Monitor</h1>
+
+    <div class="status-bar">
+      <span class="dot" id="wsDot"></span>
+      <span id="wsStatus">Connecting…</span>
+    </div>
+
+    <div class="row" style="margin-top:14px;">
+
+      <!-- GPS panel -->
+      <div class="card">
+        <h2>📍 GPS Tracking (JT/T 808)</h2>
+        <div id="nodata">No GPS data received yet.</div>
+        <div id="gpsData" style="display:none;">
+          <div class="field"><span class="label">Device</span>   <span class="value" id="gDevice">-</span></div>
+          <div class="field"><span class="label">Time (UTC)</span><span class="value" id="gTime">-</span></div>
+          <div class="field"><span class="label">Latitude</span>  <span class="value" id="gLat">-</span></div>
+          <div class="field"><span class="label">Longitude</span> <span class="value" id="gLng">-</span></div>
+          <div class="field"><span class="label">Speed</span>     <span class="value" id="gSpeed">-</span></div>
+          <div class="field"><span class="label">Heading</span>   <span class="value" id="gHeading">-</span></div>
+          <div class="field"><span class="label">Altitude</span>  <span class="value" id="gAlt">-</span></div>
+          <div class="field">
+            <span class="label">ACC / Fix</span>
+            <span><span class="badge off" id="gACC">OFF</span>&nbsp;<span class="badge nofix" id="gFix">NO FIX</span></span>
+          </div>
+        </div>
+        <h2 style="margin-top:14px;">📜 GPS History (latest 20)</h2>
+        <pre id="gpsLog">—</pre>
+      </div>
+
+      <!-- Video panel -->
+      <div class="card">
+        <h2>📹 Live Video Packets (JT/T 1078)</h2>
+        <p style="font-size:0.85rem;color:#888;margin:0 0 10px;">
+          Receiving raw stream packets from device.<br>
+          Full video playback requires a WebRTC/FLV pipeline (not included in this demo).
+        </p>
+        <div class="field"><span class="label">Last device</span>  <span class="value" id="vDevice">-</span></div>
+        <div class="field"><span class="label">Channel</span>      <span class="value" id="vChannel">-</span></div>
+        <div class="field"><span class="label">Payload type</span> <span class="value" id="vType">-</span></div>
+        <div class="field"><span class="label">Packet size</span>  <span class="value" id="vSize">-</span></div>
+        <h2 style="margin-top:14px;">📜 Video Packet Log</h2>
+        <pre id="videoLog">—</pre>
+      </div>
+
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
