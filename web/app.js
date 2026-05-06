@@ -160,12 +160,14 @@ function startVideoStream(deviceId, channel) {
 
   vidH265Warn.style.display = "none";
   vidNoStream.style.display = "none";
+  videoEl.style.display = "block";
   setVidStatus("connecting", "Connecting…");
   setVidCodecBadge(null);
 
   if (typeof flvjs === "undefined" || !flvjs.isSupported()) {
     setVidStatus("error", "flv.js not supported in this browser");
     vidNoStream.style.display = "block";
+    videoEl.style.display = "none";
     return;
   }
 
@@ -179,10 +181,15 @@ function startVideoStream(deviceId, channel) {
 
   player.attachMediaElement(videoEl);
   player.load();
-  player.play().catch(() => {
-    // Autoplay blocked by browser – user must click play manually
-    setVidStatus("connecting", "Waiting for stream (click ▶ to play)…");
-  });
+
+  // flv.js play() returns void, not a Promise — guard with optional chaining
+  const playPromise = player.play();
+  if (playPromise && typeof playPromise.catch === "function") {
+    playPromise.catch(() => {
+      // Autoplay blocked by browser – user must click play manually
+      setVidStatus("connecting", "Waiting for stream (click ▶ on the video to play)…");
+    });
+  }
 
   player.on(flvjs.Events.ERROR, (errType, errDetail, errInfo) => {
     console.warn("[flvjs] error", errType, errDetail, errInfo);
@@ -236,6 +243,8 @@ function stopVideoStream() {
     flvPlayer = null;
   }
   playerActive = false;
+  videoEl.style.display = "none";
+  vidNoStream.style.display = "block";
   vidStartBtn.style.display = "";
   vidStopBtn.style.display  = "none";
 }
@@ -263,6 +272,4 @@ function showH265Warning() {
   setVidStatus("error", "H.265 codec — browser playback unavailable");
   setVidCodecBadge("h265");
   stopVideoStream();
-  vidStartBtn.style.display = "";
-  vidStopBtn.style.display  = "none";
 }
