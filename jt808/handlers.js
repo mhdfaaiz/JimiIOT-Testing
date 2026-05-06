@@ -1,27 +1,23 @@
-import { escapeJT808, xorChecksum, parseBcdTimeYYMMDDhhmmss } from "./codec.js";
+import { escapeJT808, xorChecksum } from "./codec.js";
 
-// ─── Frame helpers ────────────────────────────────────────────────────────────
-
-/**
- * Wrap an already-built payload (header + body + checksum) in 0x7E delimiters
- * after applying JT808 escape rules.
- */
-function toFrame(raw) {
-  const escaped = escapeJT808(raw);
-  return Buffer.concat([Buffer.from([0x7e]), escaped, Buffer.from([0x7e])]);
+function toFrame(unescapedWithoutDelimiters) {
+  const esc = escapeJT808(unescapedWithoutDelimiters);
+  return Buffer.concat([Buffer.from([0x7e]), esc, Buffer.from([0x7e])]);
 }
 
-// ─── 0x8001 Platform General Response encoder ────────────────────────────────
+function buildHeaderV2019({ msgId, bodyLen, deviceIdRaw10, msgSeq, protoVer = 0x01 }) {
+  const header = Buffer.alloc(17);
+  header.writeUInt16BE(msgId & 0xffff, 0);
+  header.writeUInt16BE(bodyLen & 0x03ff, 2);
+  header.writeUInt8(protoVer & 0xff, 4);
 
-/**
- * Build a complete framed 0x8001 platform general response.
- *
- * @param {object} opts
- * @param {number}  opts.replySeq     - Sequence number of the message being acknowledged.
- * @param {number}  opts.respMsgId    - Message ID being acknowledged.
- * @param {number}  opts.result       - 0=success, 1=failure, 2=wrong message, 3=unsupported.
- * @param {Buffer}  [opts.deviceIdRaw10] - 10-byte device ID field (echoed back). Defaults to zeros.
- */
+  const dev = deviceIdRaw10 ?? Buffer.alloc(10, 0x00);
+  dev.copy(header, 5);
+
+  header.writeUInt16BE(msgSeq & 0xffff, 15);
+  return header;
+}
+
 export function encodePlatformGeneralResponse8001({ replySeq, respMsgId, result, deviceIdRaw10 }) {
   // Body: replySeq(2) + respMsgId(2) + result(1)
   const body = Buffer.alloc(5);
@@ -29,17 +25,89 @@ export function encodePlatformGeneralResponse8001({ replySeq, respMsgId, result,
   body.writeUInt16BE(respMsgId & 0xffff, 2);
   body.writeUInt8(result & 0xff, 4);
 
-  // v2019 header layout (Table 3-3):
-  //   msgId(2) + attr(2) + protoVer(1) + deviceId(10) + msgSeq(2)  =  17 bytes
-  const header = Buffer.alloc(17);
-  header.writeUInt16BE(0x8001, 0);                    // message ID
-  header.writeUInt16BE(body.length & 0x03ff, 2);      // attr: body length in low 10 bits
-  header.writeUInt8(0x01, 4);                         // protocol version = 1 (v2019)
+  const header = buildHeaderV2019({
+    msgId: 0x8001,
+    bodyLen: body.length,
+    deviceIdRaw10,
+    msgSeq: replySeq,
+    protoVer: 0x01
+  });
 
-  const dev = deviceIdRaw10 ?? Buffer.alloc(10, 0x00);
-  dev.copy(header, 5);                                // device ID (10 bytes)
+  const withoutChk = Buffer.concat([header, body]);
+  const chk = Buffer.from([xorChecksum(withoutChk)]);
+  return toFrame(Buffer.concat([withoutChk, chk]));
+}
 
-  header.writeUInt16BE(replySeq & 0xffff, 15);        // platform uses same seq for simplicity
+/**
+ * Encode JT/T 808 v2019 0x9101 Real-Time Audio/Video Transmission Command.
+ *
+ * Body format (as in your doc Table 6-2):
+ *  - ipLen (BYTE)
+ *  - ip (BYTE[ipLen])
+ *  - tcpPort (WORD)
+ *  - udpPort (WORD)
+ *  - channel (BYTE)
+ *  - dataType (BYTE) 0=a+v, 1=video, 2=two-way voice, ...
+ *  - streamType (BYTE) 0=main, 1=sub
+ */
+export function encodeRealtimeAv9101({
+  deviceIdRaw10,
+  msgSeq,
+  serverIp,
+  tcpPort,
+  udpPort,
+  channel,
+  dataType = 1,
+  streamType = 0
+}) {
+  const ipBuf = Buffer.from(String(serverIp), "ascii");
+  if (ipBuf.length > 21) throw new Error("serverIp too long (max 21 bytes)");
+
+  const body = Buffer.alloc(1 + ipBuf.length + 2 + 2 + 1 + 1 + 1);
+  let o = 0;
+  body.writeUInt8(ipBuf.length, o); o += 1;
+  ipBuf.copy(body, o); o += ipBuf.length;
+  body.writeUInt16BE(tcpPort & 0xffff, o); o += 2;
+  body.writeUInt16BE(udpPort & 0xffff, o); o += 2;
+  body.writeUInt8(channel & 0xff, o); o += 1;
+  body.writeUInt8(dataType & 0xff, o); o += 1;
+  body.writeUInt8(streamType & 0xff, o); o += 1;
+
+  const header = buildHeaderV2019({
+    msgId: 0x9101,
+    bodyLen: body.length,
+    deviceIdRaw10,
+    msgSeq,
+    protoVer: 0x01
+  });
+
+  const withoutChk = Buffer.concat([header, body]);
+  const chk = Buffer.from([xorChecksum(withoutChk)]);
+  return toFrame(Buffer.concat([withoutChk, chk]));
+}
+
+/**
+ * Encode JT/T 808 v2019 0x9102 Real-time Audio/Video Transmission Control.
+ * Table 6-4:
+ *  - channel (BYTE)
+ *  - cmd (BYTE) 0 close, 1 switch stream, 2 pause all, 3 resume, 4 close voice
+ *  - closeType (BYTE) 0 both, 1 close audio keep video, 2 close video keep audio
+ *  - switchStreamType (BYTE) 0 main, 1 sub
+ */
+export function encodeRealtimeAvCtrl9102({ deviceIdRaw10, msgSeq, channel, cmd = 0, closeType = 2, switchStreamType = 0 }) {
+  const body = Buffer.alloc(4);
+  body.writeUInt8(channel & 0xff, 0);
+  body.writeUInt8(cmd & 0xff, 1);
+  body.writeUInt8(closeType & 0xff, 2);
+  body.writeUInt8(switchStreamType & 0xff, 3);
+
+  const header = buildHeaderV2019({
+    msgId: 0x9102,
+    bodyLen: body.length,
+    deviceIdRaw10,
+    msgSeq,
+    protoVer: 0x01
+  });
 
   const withoutChk = Buffer.concat([header, body]);
   const chk = Buffer.from([xorChecksum(withoutChk)]);
@@ -105,50 +173,40 @@ export function handleJT808Message(pkt, { onLocation, onLog }) {
 
 // ─── 0x0200 location body parser ─────────────────────────────────────────────
 
+import { parseBcdTimeYYMMDDhhmmss } from "./codec.js";
+
 /**
  * Parse the body of a JT/T 808 0x0200 location report.
  * Fixed part (28 bytes): alarm(4) status(4) lat(4) lng(4) alt(2) speed(2) heading(2) time(6)
- * Followed by variable-length supplementary TLV items.
  */
 function parse0200Body(body) {
-  if (body.length < 28) throw new Error(`0x0200 body too short: ${body.length} bytes`);
+  const alarm  = body.readUInt32BE(0);
+  const status = body.readUInt32BE(4);
+  const latRaw = body.readInt32BE(8);
+  const lngRaw = body.readInt32BE(12);
+  const alt    = body.readUInt16BE(16);
+  const speed  = body.readUInt16BE(18);
+  const heading = body.readUInt16BE(20);
+  const timeBcd = body.subarray(22, 28);
 
-  const alarm      = body.readUInt32BE(0);
-  const status     = body.readUInt32BE(4);
-  const latRaw     = body.readUInt32BE(8);
-  const lngRaw     = body.readUInt32BE(12);
-  const altitude   = body.readUInt16BE(16);
-  const speedTenth = body.readUInt16BE(18); // unit: 1/10 km/h
-  const heading    = body.readUInt16BE(20);
-  const timeBcd    = body.subarray(22, 28);
+  const lat = latRaw / 1e6;
+  const lng = lngRaw / 1e6;
 
-  // Status word bit meanings (from JT/T 808 spec)
-  const accOn  = (status & 0x00000001) !== 0; // bit 0: ACC on
-  const gpsFix = (status & 0x00000002) !== 0; // bit 1: location is fixed
-
-  // Supplementary TLV items after byte 28
-  const extra = {};
-  let i = 28;
-  while (i + 2 <= body.length) {
-    const id  = body.readUInt8(i);
-    const len = body.readUInt8(i + 1);
-    i += 2;
-    if (i + len > body.length) break;
-    extra[`0x${id.toString(16).padStart(2, "0")}`] = body.subarray(i, i + len).toString("hex");
-    i += len;
-  }
+  // status bit 0: ACC (commonly)
+  const accOn = (status & 0x00000001) !== 0;
+  // status bit 1: GPS fix (commonly)
+  const gpsFix = (status & 0x00000002) !== 0;
 
   return {
-    ts:       parseBcdTimeYYMMDDhhmmss(timeBcd),
     alarm,
     status,
-    accOn,
-    gpsFix,
-    lat:      latRaw / 1e6,
-    lng:      lngRaw / 1e6,
-    altitude,
-    speedKmh: speedTenth / 10,
+    lat,
+    lng,
+    altitude: alt,
+    speedKmh: speed / 10,
     heading,
-    extra
+    ts: parseBcdTimeYYMMDDhhmmss(timeBcd),
+    accOn,
+    gpsFix
   };
 }

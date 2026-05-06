@@ -1,16 +1,20 @@
 import express from "express";
 import http from "http";
 import path from "path";
+import os from "os";
 import { WebSocketServer, WebSocket } from "ws";
 import { fileURLToPath } from "url";
 
 import { startJT808Server } from "./jt808/jt808-server.js";
 import { startJT1078Udp } from "./jt1078/jt1078-udp.js";
+import { encodeRealtimeAv9101, encodeRealtimeAvCtrl9102 } from "./jt808/handlers.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.use(express.json());
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
@@ -21,9 +25,49 @@ const state = {
   // deviceId -> { bytes, packets, lastTs, perChannel: Map<channel, stats> }
   videoStats: new Map(),
 
+  // deviceId -> { socket, deviceIdRaw10, nextSeq }
+  jt808Sessions: new Map(),
+
   // connected WebSocket clients
   clients: new Set()
 };
+
+function localIpGuess() {
+  // If you set PUBLIC_IP, we use that.
+  if (process.env.PUBLIC_IP) return process.env.PUBLIC_IP;
+
+  const ifs = os.networkInterfaces();
+  for (const entries of Object.values(ifs)) {
+    for (const inf of entries ?? []) {
+      if (!inf || inf.internal) continue;
+      if (inf.family === "IPv4") return inf.address;
+    }
+  }
+  return "127.0.0.1";
+}
+
+function getOrInitSession(deviceId, socket) {
+  let s = state.jt808Sessions.get(deviceId);
+  if (!s) {
+    s = {
+      socket,
+      deviceIdRaw10: Buffer.from(deviceId, "hex"),
+      nextSeq: 1
+    };
+    state.jt808Sessions.set(deviceId, s);
+  } else {
+    s.socket = socket;
+  }
+  return s;
+}
+
+function wsSend(ws, obj) {
+  try {
+    ws.send(JSON.stringify(obj));
+  } catch {
+    // ignore
+  }
+}
 
 wss.on("connection", (ws, req) => {
   const ip = req.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim() || req.socket.remoteAddress;
@@ -39,11 +83,11 @@ wss.on("connection", (ws, req) => {
   });
 
   // Always send hello immediately.
-  ws.send(JSON.stringify({ type: "hello", data: { ok: true } }));
+  wsSend(ws, { type: "hello", data: { ok: true } });
 
   // Hydrate UI on connect with the latest known GPS for each device.
   for (const [deviceId, rec] of state.gps.entries()) {
-    if (rec?.latest) ws.send(JSON.stringify({ type: "gps", deviceId, data: rec.latest }));
+    if (rec?.latest) wsSend(ws, { type: "gps", deviceId, data: rec.latest });
   }
 
   // Hydrate UI on connect with latest known video stats per device/channel.
@@ -51,7 +95,7 @@ wss.on("connection", (ws, req) => {
     const per = s?.perChannel;
     if (!per) continue;
     for (const [channel, cs] of per.entries()) {
-      ws.send(JSON.stringify({ type: "video_stats", deviceId, data: { channel, ...cs } }));
+      wsSend(ws, { type: "video_stats", deviceId, data: { channel, ...cs } });
     }
   }
 });
@@ -100,6 +144,79 @@ app.get("/api/video/:deviceId/stats", (req, res) => {
   res.json({ deviceId: req.params.deviceId, perChannel });
 });
 
+function startRealtimeVideo({ deviceId, channels = [1, 2], dataType = 1, streamType = 0 }) {
+  const sess = state.jt808Sessions.get(deviceId);
+  if (!sess?.socket) throw new Error(`No active JT808 session for device ${deviceId}`);
+
+  const serverIp = process.env.VIDEO_SERVER_IP || process.env.PUBLIC_IP || localIpGuess();
+  const tcpPort = Number(process.env.JT1078_TCP_PORT ?? process.env.JT1078_PORT ?? 7001);
+  const udpPort = Number(process.env.JT1078_UDP_PORT ?? 7001);
+
+  for (const ch of channels) {
+    const msgSeq = sess.nextSeq++;
+    const pkt = encodeRealtimeAv9101({
+      deviceIdRaw10: sess.deviceIdRaw10,
+      msgSeq,
+      serverIp,
+      tcpPort,
+      udpPort,
+      channel: Number(ch),
+      dataType,
+      streamType
+    });
+
+    sess.socket.write(pkt);
+    console.log("[JT808] sent 0x9101 start realtime A/V", { deviceId, channel: Number(ch), dataType, streamType, serverIp, udpPort });
+  }
+}
+
+function stopRealtimeVideo({ deviceId, channels = [1, 2], closeType = 2 }) {
+  const sess = state.jt808Sessions.get(deviceId);
+  if (!sess?.socket) throw new Error(`No active JT808 session for device ${deviceId}`);
+
+  for (const ch of channels) {
+    const msgSeq = sess.nextSeq++;
+    const pkt = encodeRealtimeAvCtrl9102({
+      deviceIdRaw10: sess.deviceIdRaw10,
+      msgSeq,
+      channel: Number(ch),
+      cmd: 0,
+      closeType,
+      switchStreamType: 0
+    });
+
+    sess.socket.write(pkt);
+    console.log("[JT808] sent 0x9102 stop realtime A/V", { deviceId, channel: Number(ch), closeType });
+  }
+}
+
+// Start/Stop endpoints
+app.post("/api/video/:deviceId/start", (req, res) => {
+  const deviceId = req.params.deviceId;
+  const channels = Array.isArray(req.body?.channels) ? req.body.channels : [1, 2];
+  const streamType = req.body?.streamType != null ? Number(req.body.streamType) : 0;
+  const dataType = req.body?.dataType != null ? Number(req.body.dataType) : 1;
+
+  try {
+    startRealtimeVideo({ deviceId, channels, dataType, streamType });
+    res.json({ ok: true, deviceId, channels, dataType, streamType });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e?.message ?? String(e) });
+  }
+});
+
+app.post("/api/video/:deviceId/stop", (req, res) => {
+  const deviceId = req.params.deviceId;
+  const channels = Array.isArray(req.body?.channels) ? req.body.channels : [1, 2];
+
+  try {
+    stopRealtimeVideo({ deviceId, channels });
+    res.json({ ok: true, deviceId, channels });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e?.message ?? String(e) });
+  }
+});
+
 // Start JT808 TCP gateway
 startJT808Server({
   port: Number(process.env.JT808_PORT ?? 6808),
@@ -111,6 +228,18 @@ startJT808Server({
     if (rec.history.length > 200) rec.history.shift();
     state.gps.set(deviceId, rec);
     broadcast({ type: "gps", deviceId, data: loc });
+  },
+  onSocket: ({ deviceId, socket }) => {
+    const sess = getOrInitSession(deviceId, socket);
+    console.log("[JT808] session ready", { deviceId });
+
+    if (process.env.AUTO_START_VIDEO === "1") {
+      try {
+        startRealtimeVideo({ deviceId, channels: [1, 2], dataType: 1, streamType: 0 });
+      } catch (e) {
+        console.log("[JT808] auto-start video failed", { deviceId, error: e?.message ?? String(e) });
+      }
+    }
   },
   onLog: (line) => console.log("[JT808]", line)
 });

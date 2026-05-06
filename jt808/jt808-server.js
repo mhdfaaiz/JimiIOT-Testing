@@ -24,8 +24,9 @@ function findFrame(buffer) {
  * @param {number} opts.port         - TCP port to listen on (default 6808).
  * @param {Function} opts.onLocation - Called with (deviceId, locObject) on 0x0200.
  * @param {Function} opts.onLog      - Called with a log string.
+ * @param {Function} opts.onSocket   - Called with ({ deviceId, socket }) when a device is identified.
  */
-export function startJT808Server({ port, onLocation, onLog }) {
+export function startJT808Server({ port, onLocation, onLog, onSocket }) {
   const server = net.createServer((socket) => {
     onLog?.(`client connected from ${socket.remoteAddress}:${socket.remotePort}`);
     let buf = Buffer.alloc(0);
@@ -53,6 +54,16 @@ export function startJT808Server({ port, onLocation, onLog }) {
         }
 
         try {
+          // Identify deviceId from v2019 header (msgId + attr + protoVer + deviceId(10) + seq)
+          if (pkt.length >= 18) {
+            const deviceIdRaw10 = Buffer.from(pkt.subarray(5, 15));
+            const deviceId = deviceIdRaw10.toString("hex");
+            if (deviceId && socket.__deviceId !== deviceId) {
+              socket.__deviceId = deviceId;
+              onSocket?.({ deviceId, socket });
+            }
+          }
+
           const result = handleJT808Message(pkt, { onLocation, onLog });
           if (result?.ack8001) {
             socket.write(result.ack8001);
