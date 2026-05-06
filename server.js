@@ -94,7 +94,7 @@ startJT1078Udp({
   onLog: (line) => console.log("[JT1078]", line)
 });
 
-const PORT = Number(process.env.PORT ?? 3000);
+const PORT = Number(process.env.PORT ?? 3008);
 server.listen(PORT, () => {
   console.log(`Web app running at http://localhost:${PORT}`);
   console.log(`JT808 TCP gateway on port ${process.env.JT808_PORT ?? 6808}`);
