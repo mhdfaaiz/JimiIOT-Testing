@@ -49,10 +49,20 @@ export function encodeRealtimeAv9101({
   udpPort,
   channel,
   dataType = 1,
-  streamType = 0
+  streamType = 0,
+  // When true, the serverIp field is always transmitted as exactly 21 bytes
+  // (zero-padded).  Some vendor implementations require a fixed-length field.
+  pad21 = false
 }) {
-  const ipBuf = Buffer.from(String(serverIp), "ascii");
-  if (ipBuf.length > 21) throw new Error("serverIp too long (max 21 bytes)");
+  let ipBuf = Buffer.from(String(serverIp), "ascii");
+  if (pad21) {
+    // Truncate to 21 bytes if necessary, then zero-pad to exactly 21
+    const fixed = Buffer.alloc(21, 0);
+    ipBuf.subarray(0, 21).copy(fixed);
+    ipBuf = fixed;
+  } else if (ipBuf.length > 127) {
+    throw new Error("serverIp too long (max 127 bytes)");
+  }
 
   const body = Buffer.alloc(1 + ipBuf.length + 2 + 2 + 1 + 1 + 1);
   let o = 0;

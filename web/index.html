@@ -19,6 +19,7 @@
         background: #fff; border: 1px solid #ddd;
         border-radius: 10px; padding: 16px; flex: 1; min-width: 300px;
       }
+      .card-full { flex-basis: 100%; }
       .field { display: flex; justify-content: space-between; margin: 6px 0; font-size: 0.9rem; }
       .label { color: #888; }
       .value { font-weight: 600; }
@@ -32,6 +33,7 @@
       }
       .dot.connected { background: #2ecc71; }
       .dot.error     { background: #e74c3c; }
+      .dot.warn      { background: #f39c12; }
       pre {
         background: #f7f7f7; border: 1px solid #e5e5e5;
         border-radius: 6px; padding: 10px; margin-top: 10px;
@@ -42,10 +44,13 @@
         display: inline-block; padding: 2px 8px; border-radius: 12px;
         font-size: 0.75rem; font-weight: 700;
       }
-      .badge.on  { background: #d4f8e8; color: #1a7e4a; }
-      .badge.off { background: #fde8e8; color: #a33; }
-      .badge.fix { background: #d4e8f8; color: #1a4a7e; }
+      .badge.on    { background: #d4f8e8; color: #1a7e4a; }
+      .badge.off   { background: #fde8e8; color: #a33; }
+      .badge.fix   { background: #d4e8f8; color: #1a4a7e; }
       .badge.nofix { background: #f8f4d4; color: #7e5a1a; }
+      .badge.h264  { background: #d4e8f8; color: #1a4a7e; }
+      .badge.h265  { background: #fde8e8; color: #a33; }
+      .badge.unknown { background: #f0f0f0; color: #888; }
       #nodata { color: #aaa; font-style: italic; font-size: 0.9rem; }
 
       .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -54,6 +59,44 @@
         border-radius: 8px;
         padding: 10px;
         background: #fcfcfc;
+      }
+
+      /* Video player section */
+      .vid-controls {
+        display: flex; align-items: flex-end; gap: 8px;
+        flex-wrap: wrap; margin-bottom: 12px;
+      }
+      .vid-controls label { font-size: 0.82rem; color: #666; display: block; margin-bottom: 3px; }
+      .vid-controls input, .vid-controls select {
+        padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px;
+        font-size: 0.9rem; width: 100%;
+      }
+      .vid-controls .ctrl-group { flex: 1; min-width: 140px; max-width: 260px; }
+      .btn {
+        padding: 7px 16px; border: none; border-radius: 6px;
+        cursor: pointer; font-size: 0.9rem; font-weight: 600; white-space: nowrap;
+      }
+      .btn-primary { background: #2563eb; color: #fff; }
+      .btn-primary:hover { background: #1d4ed8; }
+      .btn-danger  { background: #e74c3c; color: #fff; }
+      .btn-danger:hover  { background: #c0392b; }
+      .btn:disabled { opacity: 0.5; cursor: default; }
+
+      #videoPlayer {
+        width: 100%; max-height: 400px;
+        background: #000; border-radius: 8px; display: block;
+      }
+      #vidH265Warning {
+        display: none;
+        background: #fff3cd; border: 1px solid #ffc107;
+        border-radius: 6px; padding: 10px; margin-bottom: 10px;
+        font-size: 0.85rem; color: #856404;
+      }
+      #vidNoStream {
+        display: none;
+        background: #f8f9fa; border: 1px dashed #ccc;
+        border-radius: 6px; padding: 20px; text-align: center;
+        color: #888; font-size: 0.9rem; margin-bottom: 8px;
       }
     </style>
   </head>
@@ -88,13 +131,9 @@
         <pre id="gpsLog">—</pre>
       </div>
 
-      <!-- Video panel -->
+      <!-- Video stats panel -->
       <div class="card">
         <h2>📹 Live Video Monitor (JT/T 1078)</h2>
-        <p style="font-size:0.85rem;color:#888;margin:0 0 10px;">
-          This page shows per-channel live packet activity (CH1 &amp; CH2) and a packet log.
-          Full video playback requires an additional transcoding pipeline.
-        </p>
 
         <h3>Channel activity</h3>
         <div class="two-col">
@@ -122,6 +161,49 @@
 
     </div>
 
+    <!-- Live Video Player -->
+    <div class="row" style="margin-top:16px;">
+      <div class="card card-full">
+        <h2>🎬 Live Video Player</h2>
+
+        <div class="vid-controls">
+          <div class="ctrl-group">
+            <label for="vidDevice">Device ID</label>
+            <input id="vidDevice" type="text" placeholder="auto-detected from GPS" />
+          </div>
+          <div class="ctrl-group" style="max-width:110px;">
+            <label for="vidChannel">Channel</label>
+            <select id="vidChannel">
+              <option value="1">CH 1</option>
+              <option value="2">CH 2</option>
+            </select>
+          </div>
+          <button id="vidStartBtn" class="btn btn-primary">▶ Start Stream</button>
+          <button id="vidStopBtn"  class="btn btn-danger" style="display:none;">⬛ Stop</button>
+        </div>
+
+        <div class="status-bar" style="margin-bottom:10px;">
+          <span class="dot" id="vidDot"></span>
+          <span id="vidStatusText">Idle — enter device ID and press Start Stream</span>
+          <span id="vidCodecBadge" class="badge" style="margin-left:8px; display:none;"></span>
+        </div>
+
+        <div id="vidH265Warning">
+          ⚠️ <strong>H.265/HEVC detected.</strong>
+          The browser cannot natively decode H.265 inside flv.js.
+          Please configure the camera to output H.264, or enable server-side transcoding.
+        </div>
+
+        <div id="vidNoStream">
+          📡 No stream active yet — click <strong>Start Stream</strong> to request live video from the device.
+        </div>
+
+        <video id="videoPlayer" controls muted playsinline autoplay></video>
+      </div>
+    </div>
+
+    <!-- flv.js from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>
