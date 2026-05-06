@@ -46,7 +46,10 @@ function getOrInitSession(deviceId, socket) {
       socket,
       deviceIdRaw10: Buffer.from(deviceId, "hex"),
       nextSeq: 1,
-      lastGeneralResponseByMsgId: new Map()
+      lastGeneralResponseByMsgId: new Map(),
+
+      // replySeq -> { resolve, timeout }
+      pendingByReplySeq: new Map()
     };
     state.jt808Sessions.set(deviceId, s);
   } else {
@@ -93,15 +96,15 @@ function broadcast(obj) {
 
 app.use(express.static(path.join(__dirname, "web")));
 
-app.post("/api/video/:deviceId/start", (req, res) => {
+app.post("/api/video/:deviceId/start", async (req, res) => {
   const deviceId = req.params.deviceId;
   const channels = Array.isArray(req.body?.channels) ? req.body.channels : [1, 2];
   const streamType = req.body?.streamType != null ? Number(req.body.streamType) : 0;
   const dataType = req.body?.dataType != null ? Number(req.body.dataType) : 1;
 
   try {
-    startRealtimeVideo({ deviceId, channels, dataType, streamType });
-    res.json({ ok: true, deviceId, channels, dataType, streamType });
+    const results = await startRealtimeVideoAuto({ deviceId, channels, dataType, streamType });
+    res.json({ ok: true, deviceId, channels, dataType, streamType, results });
   } catch (e) {
     res.status(400).json({ ok: false, error: e?.message ?? String(e) });
   }
@@ -141,7 +144,53 @@ function updateVideoStats({ deviceId, channel, payloadType, dataBody }) {
   broadcast({ type: "video_stats", deviceId, data: { channel: ch, ...cs } });
 }
 
-function startRealtimeVideo({ deviceId, channels = [1, 2], dataType = 1, streamType = 0 }) {
+function send9101Variant(sess, { deviceId, channel, dataType, streamType, serverIp, tcpPort, udpPort }) {
+  const msgSeq = sess.nextSeq++;
+  const pkt = encodeRealtimeAv9101({
+    deviceIdRaw10: sess.deviceIdRaw10,
+    msgSeq,
+    serverIp,
+    tcpPort,
+    udpPort,
+    channel: Number(channel),
+    dataType,
+    streamType
+  });
+
+  sess.socket.write(pkt);
+  console.log("[JT808] sent 0x9101 start realtime A/V", { deviceId, channel: Number(channel), dataType, streamType, serverIp, udpPort, tcpPort, msgSeq });
+  return msgSeq;
+}
+
+function awaitGeneralResponse(sess, replySeq, timeoutMs = 3000) {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => {
+      sess.pendingByReplySeq.delete(replySeq);
+      resolve({ ok: false, timeout: true });
+    }, timeoutMs);
+
+    sess.pendingByReplySeq.set(replySeq, {
+      resolve: (gr) => {
+        clearTimeout(t);
+        sess.pendingByReplySeq.delete(replySeq);
+        resolve({ ok: true, gr });
+      },
+      timeout: t
+    });
+  });
+}
+
+function buildVariants({ serverIp, tcpPort, udpPort }) {
+  // Try combinations that commonly differ across vendor implementations.
+  // Keep serverIp string as-is for now; if needed we can add a fixed-21-byte/padded variant later.
+  return [
+    { name: "udp_only", tcpPort: 0, udpPort },
+    { name: "tcp_only", tcpPort, udpPort: 0 },
+    { name: "both", tcpPort, udpPort }
+  ];
+}
+
+async function startRealtimeVideoAuto({ deviceId, channels = [1, 2], dataType = 1, streamType = 0 }) {
   const sess = state.jt808Sessions.get(deviceId);
   if (!sess?.socket) throw new Error(`No active JT808 session for device ${deviceId}`);
 
@@ -149,22 +198,50 @@ function startRealtimeVideo({ deviceId, channels = [1, 2], dataType = 1, streamT
   const tcpPort = Number(process.env.JT1078_TCP_PORT ?? 7001);
   const udpPort = Number(process.env.JT1078_UDP_PORT ?? 7001);
 
-  for (const ch of channels) {
-    const msgSeq = sess.nextSeq++;
-    const pkt = encodeRealtimeAv9101({
-      deviceIdRaw10: sess.deviceIdRaw10,
-      msgSeq,
-      serverIp,
-      tcpPort,
-      udpPort,
-      channel: Number(ch),
-      dataType,
-      streamType
-    });
+  const variants = buildVariants({ serverIp, tcpPort, udpPort });
 
-    sess.socket.write(pkt);
-    console.log("[JT808] sent 0x9101 start realtime A/V", { deviceId, channel: Number(ch), dataType, streamType, serverIp, udpPort, tcpPort, msgSeq });
+  const results = [];
+
+  for (const ch of channels) {
+    let channelOk = false;
+
+    for (const v of variants) {
+      const replySeq = send9101Variant(sess, {
+        deviceId,
+        channel: ch,
+        dataType,
+        streamType,
+        serverIp,
+        tcpPort: v.tcpPort,
+        udpPort: v.udpPort
+      });
+
+      const r = await awaitGeneralResponse(sess, replySeq, 3500);
+
+      if (!r.ok) {
+        console.log("[JT808] 0x9101 no generalRsp (timeout)", { deviceId, channel: Number(ch), variant: v.name, replySeq });
+        results.push({ channel: Number(ch), variant: v.name, status: "timeout" });
+        continue;
+      }
+
+      const gr = r.gr;
+      results.push({ channel: Number(ch), variant: v.name, status: gr.resultName, result: gr.result });
+
+      if (gr.result === 0) {
+        console.log("[JT808] 0x9101 accepted", { deviceId, channel: Number(ch), variant: v.name });
+        channelOk = true;
+        break;
+      }
+
+      console.log("[JT808] 0x9101 rejected", { deviceId, channel: Number(ch), variant: v.name, result: gr.resultName });
+    }
+
+    if (!channelOk) {
+      console.log("[JT808] 0x9101 failed for channel", { deviceId, channel: Number(ch) });
+    }
   }
+
+  return results;
 }
 
 function stopRealtimeVideo({ deviceId, channels = [1, 2], closeType = 2 }) {
@@ -204,18 +281,22 @@ startJT808Server({
     console.log("[JT808] session ready", { deviceId });
 
     if (process.env.AUTO_START_VIDEO === "1") {
-      try {
-        startRealtimeVideo({ deviceId, channels: [1, 2], dataType: 1, streamType: 0 });
-      } catch (e) {
+      // Fire and forget
+      startRealtimeVideoAuto({ deviceId, channels: [1, 2], dataType: 1, streamType: 0 }).catch((e) => {
         console.log("[JT808] auto-start video failed", { deviceId, error: e?.message ?? String(e) });
-      }
+      });
     }
   },
   onGeneralResponse: (gr) => {
     const sess = state.jt808Sessions.get(gr.deviceId);
-    if (sess) sess.lastGeneralResponseByMsgId.set(gr.replyMsgId, gr);
+    if (sess) {
+      sess.lastGeneralResponseByMsgId.set(gr.replyMsgId, gr);
 
-    // Surface 0x9101 responses clearly
+      // resolve pending promises waiting on this replySeq
+      const pending = sess.pendingByReplySeq.get(gr.replySeq);
+      if (pending) pending.resolve(gr);
+    }
+
     if (gr.replyMsgId === 0x9101) {
       console.log("[JT808] 0x9101 generalRsp", gr);
       broadcast({ type: "jt808_general_rsp", deviceId: gr.deviceId, data: gr });
