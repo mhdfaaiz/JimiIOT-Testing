@@ -17,8 +17,10 @@ const wss = new WebSocketServer({ server });
 const state = {
   // deviceId -> { latest, history: [] }
   gps: new Map(),
-  // deviceId -> { bytes, packets, lastTs }
+
+  // deviceId -> { bytes, packets, lastTs, perChannel: Map<channel, stats> }
   videoStats: new Map(),
+
   // connected WebSocket clients
   clients: new Set()
 };
@@ -40,10 +42,16 @@ wss.on("connection", (ws, req) => {
   ws.send(JSON.stringify({ type: "hello", data: { ok: true } }));
 
   // Hydrate UI on connect with the latest known GPS for each device.
-  // This avoids a "stuck" UI when a device only reports location infrequently.
   for (const [deviceId, rec] of state.gps.entries()) {
-    if (rec?.latest) {
-      ws.send(JSON.stringify({ type: "gps", deviceId, data: rec.latest }));
+    if (rec?.latest) ws.send(JSON.stringify({ type: "gps", deviceId, data: rec.latest }));
+  }
+
+  // Hydrate UI on connect with latest known video stats per device/channel.
+  for (const [deviceId, s] of state.videoStats.entries()) {
+    const per = s?.perChannel;
+    if (!per) continue;
+    for (const [channel, cs] of per.entries()) {
+      ws.send(JSON.stringify({ type: "video_stats", deviceId, data: { channel, ...cs } }));
     }
   }
 });
@@ -60,8 +68,7 @@ function broadcast(obj) {
       skipped++;
     }
   }
-  // Keep this lightweight; GPS can be frequent.
-  if (obj?.type === "gps" || obj?.type === "video") {
+  if (obj?.type === "gps" || obj?.type === "video" || obj?.type === "video_stats") {
     console.log(`[WS] broadcast type=${obj.type} to open=${ok} skipped=${skipped}`);
   }
 }
@@ -84,6 +91,15 @@ app.get("/api/gps/:deviceId/history", (req, res) => {
   res.json({ deviceId: req.params.deviceId, history: d?.history ?? [] });
 });
 
+app.get("/api/video/:deviceId/stats", (req, res) => {
+  const s = state.videoStats.get(req.params.deviceId);
+  if (!s?.perChannel) return res.json({ deviceId: req.params.deviceId, perChannel: {} });
+
+  const perChannel = {};
+  for (const [ch, cs] of s.perChannel.entries()) perChannel[String(ch)] = cs;
+  res.json({ deviceId: req.params.deviceId, perChannel });
+});
+
 // Start JT808 TCP gateway
 startJT808Server({
   port: Number(process.env.JT808_PORT ?? 6808),
@@ -103,22 +119,41 @@ startJT808Server({
 startJT1078Udp({
   port: Number(process.env.JT1078_UDP_PORT ?? 7001),
   onPacket: ({ deviceId, channel, payloadType, dataBody }) => {
-    const s = state.videoStats.get(deviceId) ?? { bytes: 0, packets: 0, lastTs: Date.now() };
+    // Total stats per device
+    let s = state.videoStats.get(deviceId);
+    if (!s) s = { bytes: 0, packets: 0, lastTs: Date.now(), perChannel: new Map() };
+
     s.bytes += dataBody.length;
     s.packets += 1;
     s.lastTs = Date.now();
+
+    // Per-channel stats
+    const ch = Number(channel);
+    let cs = s.perChannel.get(ch);
+    if (!cs) cs = { bytes: 0, packets: 0, lastTs: 0 };
+    cs.bytes += dataBody.length;
+    cs.packets += 1;
+    cs.lastTs = Date.now();
+    s.perChannel.set(ch, cs);
+
     state.videoStats.set(deviceId, s);
 
     // Broadcast packet metadata to all connected browsers
-    // NOTE: dataBody is NOT decoded/played back yet — that requires a WebRTC/FLV pipeline.
     broadcast({
       type: "video",
       deviceId,
       data: {
-        channel,
+        channel: ch,
         payloadType,
         size: dataBody.length
       }
+    });
+
+    // Broadcast per-channel stats too (for CH1/CH2 panels)
+    broadcast({
+      type: "video_stats",
+      deviceId,
+      data: { channel: ch, ...cs }
     });
   },
   onLog: (line) => console.log("[JT1078]", line)

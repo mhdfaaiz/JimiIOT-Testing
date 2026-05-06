@@ -18,7 +18,7 @@ ws.onerror = () => {
   wsStatus.textContent = "WebSocket error";
 };
 
-/* ─── DOM helpers ────────────────────────────────────────────────────────── */
+/* ─── DOM helpers ───────────────────────────────────────────────────────── */
 const gpsLog   = document.getElementById("gpsLog");
 const videoLog = document.getElementById("videoLog");
 
@@ -26,6 +26,28 @@ function prependLine(pre, line) {
   const lines = pre.textContent === "—" ? [] : pre.textContent.split("\n");
   lines.unshift(line);
   pre.textContent = lines.slice(0, 20).join("\n");
+}
+
+function fmtTs(msOrIso) {
+  if (!msOrIso) return "-";
+  const d = typeof msOrIso === "number" ? new Date(msOrIso) : new Date(msOrIso);
+  if (Number.isNaN(d.getTime())) return String(msOrIso);
+  return d.toISOString();
+}
+
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+function setVideoStats(channel, stats) {
+  const ch = Number(channel);
+  if (ch !== 1 && ch !== 2) return;
+
+  const prefix = ch === 1 ? "ch1" : "ch2";
+  setText(`${prefix}Bytes`, stats.bytes != null ? String(stats.bytes) : "-");
+  setText(`${prefix}Packets`, stats.packets != null ? String(stats.packets) : "-");
+  setText(`${prefix}Last`, stats.lastTs ? fmtTs(stats.lastTs) : "-");
 }
 
 /* ─── Message handler ────────────────────────────────────────────────────── */
@@ -74,5 +96,9 @@ ws.onmessage = (ev) => {
       videoLog,
       `dev=${msg.deviceId}  ch=${v.channel}  type=${v.payloadType}  size=${v.size}B`
     );
+  }
+
+  if (msg.type === "video_stats") {
+    setVideoStats(msg.data?.channel, msg.data);
   }
 };

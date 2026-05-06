@@ -13,6 +13,7 @@
       }
       h1 { margin: 0 0 16px; font-size: 1.4rem; }
       h2 { margin: 0 0 10px; font-size: 1.1rem; color: #444; }
+      h3 { margin: 12px 0 8px; font-size: 0.95rem; color: #444; }
       .row { display: flex; gap: 16px; flex-wrap: wrap; }
       .card {
         background: #fff; border: 1px solid #ddd;
@@ -46,6 +47,14 @@
       .badge.fix { background: #d4e8f8; color: #1a4a7e; }
       .badge.nofix { background: #f8f4d4; color: #7e5a1a; }
       #nodata { color: #aaa; font-style: italic; font-size: 0.9rem; }
+
+      .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .mini {
+        border: 1px dashed #ddd;
+        border-radius: 8px;
+        padding: 10px;
+        background: #fcfcfc;
+      }
     </style>
   </head>
   <body>
@@ -81,15 +90,32 @@
 
       <!-- Video panel -->
       <div class="card">
-        <h2>📹 Live Video Packets (JT/T 1078)</h2>
+        <h2>📹 Live Video Monitor (JT/T 1078)</h2>
         <p style="font-size:0.85rem;color:#888;margin:0 0 10px;">
-          Receiving raw stream packets from device.<br>
-          Full video playback requires a WebRTC/FLV pipeline (not included in this demo).
+          This page shows per-channel live packet activity (CH1 &amp; CH2) and a packet log.
+          Full video playback requires an additional transcoding pipeline.
         </p>
+
+        <h3>Channel activity</h3>
+        <div class="two-col">
+          <div class="mini">
+            <div class="field"><span class="label">CH1 bytes</span>   <span class="value" id="ch1Bytes">-</span></div>
+            <div class="field"><span class="label">CH1 packets</span> <span class="value" id="ch1Packets">-</span></div>
+            <div class="field"><span class="label">CH1 last</span>    <span class="value" id="ch1Last">-</span></div>
+          </div>
+          <div class="mini">
+            <div class="field"><span class="label">CH2 bytes</span>   <span class="value" id="ch2Bytes">-</span></div>
+            <div class="field"><span class="label">CH2 packets</span> <span class="value" id="ch2Packets">-</span></div>
+            <div class="field"><span class="label">CH2 last</span>    <span class="value" id="ch2Last">-</span></div>
+          </div>
+        </div>
+
+        <h3 style="margin-top:14px;">Last packet</h3>
         <div class="field"><span class="label">Last device</span>  <span class="value" id="vDevice">-</span></div>
         <div class="field"><span class="label">Channel</span>      <span class="value" id="vChannel">-</span></div>
         <div class="field"><span class="label">Payload type</span> <span class="value" id="vType">-</span></div>
         <div class="field"><span class="label">Packet size</span>  <span class="value" id="vSize">-</span></div>
+
         <h2 style="margin-top:14px;">📜 Video Packet Log</h2>
         <pre id="videoLog">—</pre>
       </div>
