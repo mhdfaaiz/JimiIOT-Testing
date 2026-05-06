@@ -1,4 +1,4 @@
-import { escapeJT808, xorChecksum } from "./codec.js";
+import { escapeJT808, xorChecksum, parseBcdTimeYYMMDDhhmmss } from "./codec.js";
 
 function toFrame(unescapedWithoutDelimiters) {
   const esc = escapeJT808(unescapedWithoutDelimiters);
@@ -40,15 +40,6 @@ export function encodePlatformGeneralResponse8001({ replySeq, respMsgId, result,
 
 /**
  * Encode JT/T 808 v2019 0x9101 Real-Time Audio/Video Transmission Command.
- *
- * Body format (as in your doc Table 6-2):
- *  - ipLen (BYTE)
- *  - ip (BYTE[ipLen])
- *  - tcpPort (WORD)
- *  - udpPort (WORD)
- *  - channel (BYTE)
- *  - dataType (BYTE) 0=a+v, 1=video, 2=two-way voice, ...
- *  - streamType (BYTE) 0=main, 1=sub
  */
 export function encodeRealtimeAv9101({
   deviceIdRaw10,
@@ -88,11 +79,6 @@ export function encodeRealtimeAv9101({
 
 /**
  * Encode JT/T 808 v2019 0x9102 Real-time Audio/Video Transmission Control.
- * Table 6-4:
- *  - channel (BYTE)
- *  - cmd (BYTE) 0 close, 1 switch stream, 2 pause all, 3 resume, 4 close voice
- *  - closeType (BYTE) 0 both, 1 close audio keep video, 2 close video keep audio
- *  - switchStreamType (BYTE) 0 main, 1 sub
  */
 export function encodeRealtimeAvCtrl9102({ deviceIdRaw10, msgSeq, channel, cmd = 0, closeType = 2, switchStreamType = 0 }) {
   const body = Buffer.alloc(4);
@@ -114,20 +100,20 @@ export function encodeRealtimeAvCtrl9102({ deviceIdRaw10, msgSeq, channel, cmd =
   return toFrame(Buffer.concat([withoutChk, chk]));
 }
 
+function decodeResultCode(code) {
+  switch (code) {
+    case 0: return "success";
+    case 1: return "failure";
+    case 2: return "message_error";
+    case 3: return "unsupported";
+    case 4: return "alarm_ack";
+    default: return `unknown(${code})`;
+  }
+}
+
 // ─── Message dispatcher ───────────────────────────────────────────────────────
 
-/**
- * Dispatch a fully verified, unescaped JT808 packet to the appropriate handler.
- *
- * @param {Buffer} pkt          - Unescaped packet including checksum byte at the end.
- * @param {object} callbacks
- * @param {Function} callbacks.onLocation
- * @param {Function} callbacks.onLog
- * @returns {{ ack8001: Buffer } | null}
- */
-export function handleJT808Message(pkt, { onLocation, onLog }) {
-  // v2019 header layout (17 bytes):
-  //   msgId(2) attr(2) protoVer(1) deviceId(10) msgSeq(2)
+export function handleJT808Message(pkt, { onLocation, onLog, onGeneralResponse } = {}) {
   if (pkt.length < 18) throw new Error("packet too short for v2019 header");
 
   const msgId        = pkt.readUInt16BE(0);
@@ -143,6 +129,29 @@ export function handleJT808Message(pkt, { onLocation, onLog }) {
 
   const ack = (r = 0) =>
     encodePlatformGeneralResponse8001({ replySeq: msgSeq, respMsgId: msgId, result: r, deviceIdRaw10 });
+
+  // 0x0001 — General terminal response
+  if (msgId === 0x0001) {
+    // Body: replySeq(2) + replyMsgId(2) + result(1)
+    if (body.length >= 5) {
+      const replySeq = body.readUInt16BE(0);
+      const replyMsgId = body.readUInt16BE(2);
+      const result = body.readUInt8(4);
+      const resultName = decodeResultCode(result);
+
+      onLog?.(
+        `generalRsp device=${deviceId} seq=${msgSeq} replySeq=${replySeq} replyMsg=0x${replyMsgId
+          .toString(16)
+          .padStart(4, "0")} result=${result}(${resultName})`
+      );
+
+      onGeneralResponse?.({ deviceId, msgSeq, replySeq, replyMsgId, result, resultName });
+    } else {
+      onLog?.(`generalRsp device=${deviceId} seq=${msgSeq} (short body len=${body.length})`);
+    }
+    // Ack the 0x0001 itself
+    return { ack8001: ack(0) };
+  }
 
   // 0x0002 — Heartbeat
   if (msgId === 0x0002) {
@@ -173,8 +182,6 @@ export function handleJT808Message(pkt, { onLocation, onLog }) {
 
 // ─── 0x0200 location body parser ─────────────────────────────────────────────
 
-import { parseBcdTimeYYMMDDhhmmss } from "./codec.js";
-
 /**
  * Parse the body of a JT/T 808 0x0200 location report.
  * Fixed part (28 bytes): alarm(4) status(4) lat(4) lng(4) alt(2) speed(2) heading(2) time(6)
@@ -192,9 +199,7 @@ function parse0200Body(body) {
   const lat = latRaw / 1e6;
   const lng = lngRaw / 1e6;
 
-  // status bit 0: ACC (commonly)
   const accOn = (status & 0x00000001) !== 0;
-  // status bit 1: GPS fix (commonly)
   const gpsFix = (status & 0x00000002) !== 0;
 
   return {

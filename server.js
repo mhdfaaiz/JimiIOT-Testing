@@ -20,16 +20,9 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 const state = {
-  // deviceId -> { latest, history: [] }
   gps: new Map(),
-
-  // deviceId -> { bytes, packets, lastTs, perChannel: Map<channel, stats> }
   videoStats: new Map(),
-
-  // deviceId -> { socket, deviceIdRaw10, nextSeq }
   jt808Sessions: new Map(),
-
-  // connected WebSocket clients
   clients: new Set()
 };
 
@@ -52,7 +45,8 @@ function getOrInitSession(deviceId, socket) {
     s = {
       socket,
       deviceIdRaw10: Buffer.from(deviceId, "hex"),
-      nextSeq: 1
+      nextSeq: 1,
+      lastGeneralResponseByMsgId: new Map()
     };
     state.jt808Sessions.set(deviceId, s);
   } else {
@@ -62,11 +56,7 @@ function getOrInitSession(deviceId, socket) {
 }
 
 function wsSend(ws, obj) {
-  try {
-    ws.send(JSON.stringify(obj));
-  } catch {
-    // ignore
-  }
+  try { ws.send(JSON.stringify(obj)); } catch { /* ignore */ }
 }
 
 wss.on("connection", (ws, req) => {
@@ -77,9 +67,6 @@ wss.on("connection", (ws, req) => {
   ws.on("close", (code, reason) => {
     console.log("[WS] client disconnected", { ip, code, reason: reason?.toString() });
     state.clients.delete(ws);
-  });
-  ws.on("error", (err) => {
-    console.log("[WS] client error", { ip, message: err?.message });
   });
 
   wsSend(ws, { type: "hello", data: { ok: true } });
@@ -99,46 +86,37 @@ wss.on("connection", (ws, req) => {
 
 function broadcast(obj) {
   const msg = JSON.stringify(obj);
-  let ok = 0;
-  let skipped = 0;
   for (const ws of state.clients) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(msg);
-      ok++;
-    } else {
-      skipped++;
-    }
-  }
-  if (obj?.type === "gps" || obj?.type === "video" || obj?.type === "video_stats") {
-    console.log(`[WS] broadcast type=${obj.type} to open=${ok} skipped=${skipped}`);
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
   }
 }
 
-// Serve static UI
 app.use(express.static(path.join(__dirname, "web")));
 
-// REST APIs
-app.get("/api/devices", (req, res) => {
-  res.json({ devices: Array.from(state.gps.keys()) });
+app.post("/api/video/:deviceId/start", (req, res) => {
+  const deviceId = req.params.deviceId;
+  const channels = Array.isArray(req.body?.channels) ? req.body.channels : [1, 2];
+  const streamType = req.body?.streamType != null ? Number(req.body.streamType) : 0;
+  const dataType = req.body?.dataType != null ? Number(req.body.dataType) : 1;
+
+  try {
+    startRealtimeVideo({ deviceId, channels, dataType, streamType });
+    res.json({ ok: true, deviceId, channels, dataType, streamType });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e?.message ?? String(e) });
+  }
 });
 
-app.get("/api/gps/:deviceId/latest", (req, res) => {
-  const d = state.gps.get(req.params.deviceId);
-  res.json({ deviceId: req.params.deviceId, latest: d?.latest ?? null });
-});
+app.post("/api/video/:deviceId/stop", (req, res) => {
+  const deviceId = req.params.deviceId;
+  const channels = Array.isArray(req.body?.channels) ? req.body.channels : [1, 2];
 
-app.get("/api/gps/:deviceId/history", (req, res) => {
-  const d = state.gps.get(req.params.deviceId);
-  res.json({ deviceId: req.params.deviceId, history: d?.history ?? [] });
-});
-
-app.get("/api/video/:deviceId/stats", (req, res) => {
-  const s = state.videoStats.get(req.params.deviceId);
-  if (!s?.perChannel) return res.json({ deviceId: req.params.deviceId, perChannel: {} });
-
-  const perChannel = {};
-  for (const [ch, cs] of s.perChannel.entries()) perChannel[String(ch)] = cs;
-  res.json({ deviceId: req.params.deviceId, perChannel });
+  try {
+    stopRealtimeVideo({ deviceId, channels });
+    res.json({ ok: true, deviceId, channels });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e?.message ?? String(e) });
+  }
 });
 
 function updateVideoStats({ deviceId, channel, payloadType, dataBody }) {
@@ -185,7 +163,7 @@ function startRealtimeVideo({ deviceId, channels = [1, 2], dataType = 1, streamT
     });
 
     sess.socket.write(pkt);
-    console.log("[JT808] sent 0x9101 start realtime A/V", { deviceId, channel: Number(ch), dataType, streamType, serverIp, udpPort, tcpPort });
+    console.log("[JT808] sent 0x9101 start realtime A/V", { deviceId, channel: Number(ch), dataType, streamType, serverIp, udpPort, tcpPort, msgSeq });
   }
 }
 
@@ -205,37 +183,11 @@ function stopRealtimeVideo({ deviceId, channels = [1, 2], closeType = 2 }) {
     });
 
     sess.socket.write(pkt);
-    console.log("[JT808] sent 0x9102 stop realtime A/V", { deviceId, channel: Number(ch), closeType });
+    console.log("[JT808] sent 0x9102 stop realtime A/V", { deviceId, channel: Number(ch), closeType, msgSeq });
   }
 }
 
-app.post("/api/video/:deviceId/start", (req, res) => {
-  const deviceId = req.params.deviceId;
-  const channels = Array.isArray(req.body?.channels) ? req.body.channels : [1, 2];
-  const streamType = req.body?.streamType != null ? Number(req.body.streamType) : 0;
-  const dataType = req.body?.dataType != null ? Number(req.body.dataType) : 1;
-
-  try {
-    startRealtimeVideo({ deviceId, channels, dataType, streamType });
-    res.json({ ok: true, deviceId, channels, dataType, streamType });
-  } catch (e) {
-    res.status(400).json({ ok: false, error: e?.message ?? String(e) });
-  }
-});
-
-app.post("/api/video/:deviceId/stop", (req, res) => {
-  const deviceId = req.params.deviceId;
-  const channels = Array.isArray(req.body?.channels) ? req.body.channels : [1, 2];
-
-  try {
-    stopRealtimeVideo({ deviceId, channels });
-    res.json({ ok: true, deviceId, channels });
-  } catch (e) {
-    res.status(400).json({ ok: false, error: e?.message ?? String(e) });
-  }
-});
-
-// Start JT808 TCP gateway
+// JT808 server
 startJT808Server({
   port: Number(process.env.JT808_PORT ?? 6808),
   onLocation: (deviceId, loc) => {
@@ -259,17 +211,26 @@ startJT808Server({
       }
     }
   },
+  onGeneralResponse: (gr) => {
+    const sess = state.jt808Sessions.get(gr.deviceId);
+    if (sess) sess.lastGeneralResponseByMsgId.set(gr.replyMsgId, gr);
+
+    // Surface 0x9101 responses clearly
+    if (gr.replyMsgId === 0x9101) {
+      console.log("[JT808] 0x9101 generalRsp", gr);
+      broadcast({ type: "jt808_general_rsp", deviceId: gr.deviceId, data: gr });
+    }
+  },
   onLog: (line) => console.log("[JT808]", line)
 });
 
-// Start JT1078 UDP receiver
+// JT1078 receivers
 startJT1078Udp({
   port: Number(process.env.JT1078_UDP_PORT ?? 7001),
   onPacket: (p) => updateVideoStats(p),
   onLog: (line) => console.log("[JT1078]", line)
 });
 
-// Start JT1078 TCP receiver (some terminals use TCP streaming)
 startJT1078Tcp({
   port: Number(process.env.JT1078_TCP_PORT ?? 7001),
   onPacket: (p) => updateVideoStats(p),
