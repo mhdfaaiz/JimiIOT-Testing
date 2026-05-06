@@ -23,16 +23,37 @@ const state = {
   clients: new Set()
 };
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  const ip = req.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim() || req.socket.remoteAddress;
+  console.log("[WS] client connected", { ip });
+
   state.clients.add(ws);
-  ws.on("close", () => state.clients.delete(ws));
+  ws.on("close", (code, reason) => {
+    console.log("[WS] client disconnected", { ip, code, reason: reason?.toString() });
+    state.clients.delete(ws);
+  });
+  ws.on("error", (err) => {
+    console.log("[WS] client error", { ip, message: err?.message });
+  });
+
   ws.send(JSON.stringify({ type: "hello", data: { ok: true } }));
 });
 
 function broadcast(obj) {
   const msg = JSON.stringify(obj);
+  let ok = 0;
+  let skipped = 0;
   for (const ws of state.clients) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(msg);
+      ok++;
+    } else {
+      skipped++;
+    }
+  }
+  // Keep this lightweight; GPS can be frequent.
+  if (obj?.type === "gps" || obj?.type === "video") {
+    console.log(`[WS] broadcast type=${obj.type} to open=${ok} skipped=${skipped}`);
   }
 }
 
