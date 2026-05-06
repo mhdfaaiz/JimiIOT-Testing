@@ -36,7 +36,16 @@ wss.on("connection", (ws, req) => {
     console.log("[WS] client error", { ip, message: err?.message });
   });
 
+  // Always send hello immediately.
   ws.send(JSON.stringify({ type: "hello", data: { ok: true } }));
+
+  // Hydrate UI on connect with the latest known GPS for each device.
+  // This avoids a "stuck" UI when a device only reports location infrequently.
+  for (const [deviceId, rec] of state.gps.entries()) {
+    if (rec?.latest) {
+      ws.send(JSON.stringify({ type: "gps", deviceId, data: rec.latest }));
+    }
+  }
 });
 
 function broadcast(obj) {
