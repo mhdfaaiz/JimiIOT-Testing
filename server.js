@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 
 import { startJT808Server } from "./jt808/jt808-server.js";
 import { startJT1078Udp } from "./jt1078/jt1078-udp.js";
+import { startJT1078Tcp } from "./jt1078/jt1078-tcp.js";
 import { encodeRealtimeAv9101, encodeRealtimeAvCtrl9102 } from "./jt808/handlers.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -33,7 +34,6 @@ const state = {
 };
 
 function localIpGuess() {
-  // If you set PUBLIC_IP, we use that.
   if (process.env.PUBLIC_IP) return process.env.PUBLIC_IP;
 
   const ifs = os.networkInterfaces();
@@ -82,15 +82,12 @@ wss.on("connection", (ws, req) => {
     console.log("[WS] client error", { ip, message: err?.message });
   });
 
-  // Always send hello immediately.
   wsSend(ws, { type: "hello", data: { ok: true } });
 
-  // Hydrate UI on connect with the latest known GPS for each device.
   for (const [deviceId, rec] of state.gps.entries()) {
     if (rec?.latest) wsSend(ws, { type: "gps", deviceId, data: rec.latest });
   }
 
-  // Hydrate UI on connect with latest known video stats per device/channel.
   for (const [deviceId, s] of state.videoStats.entries()) {
     const per = s?.perChannel;
     if (!per) continue;
@@ -120,7 +117,7 @@ function broadcast(obj) {
 // Serve static UI
 app.use(express.static(path.join(__dirname, "web")));
 
-// Simple REST APIs
+// REST APIs
 app.get("/api/devices", (req, res) => {
   res.json({ devices: Array.from(state.gps.keys()) });
 });
@@ -144,12 +141,34 @@ app.get("/api/video/:deviceId/stats", (req, res) => {
   res.json({ deviceId: req.params.deviceId, perChannel });
 });
 
+function updateVideoStats({ deviceId, channel, payloadType, dataBody }) {
+  let s = state.videoStats.get(deviceId);
+  if (!s) s = { bytes: 0, packets: 0, lastTs: Date.now(), perChannel: new Map() };
+
+  s.bytes += dataBody.length;
+  s.packets += 1;
+  s.lastTs = Date.now();
+
+  const ch = Number(channel);
+  let cs = s.perChannel.get(ch);
+  if (!cs) cs = { bytes: 0, packets: 0, lastTs: 0 };
+  cs.bytes += dataBody.length;
+  cs.packets += 1;
+  cs.lastTs = Date.now();
+  s.perChannel.set(ch, cs);
+
+  state.videoStats.set(deviceId, s);
+
+  broadcast({ type: "video", deviceId, data: { channel: ch, payloadType, size: dataBody.length } });
+  broadcast({ type: "video_stats", deviceId, data: { channel: ch, ...cs } });
+}
+
 function startRealtimeVideo({ deviceId, channels = [1, 2], dataType = 1, streamType = 0 }) {
   const sess = state.jt808Sessions.get(deviceId);
   if (!sess?.socket) throw new Error(`No active JT808 session for device ${deviceId}`);
 
   const serverIp = process.env.VIDEO_SERVER_IP || process.env.PUBLIC_IP || localIpGuess();
-  const tcpPort = Number(process.env.JT1078_TCP_PORT ?? process.env.JT1078_PORT ?? 7001);
+  const tcpPort = Number(process.env.JT1078_TCP_PORT ?? 7001);
   const udpPort = Number(process.env.JT1078_UDP_PORT ?? 7001);
 
   for (const ch of channels) {
@@ -166,7 +185,7 @@ function startRealtimeVideo({ deviceId, channels = [1, 2], dataType = 1, streamT
     });
 
     sess.socket.write(pkt);
-    console.log("[JT808] sent 0x9101 start realtime A/V", { deviceId, channel: Number(ch), dataType, streamType, serverIp, udpPort });
+    console.log("[JT808] sent 0x9101 start realtime A/V", { deviceId, channel: Number(ch), dataType, streamType, serverIp, udpPort, tcpPort });
   }
 }
 
@@ -190,7 +209,6 @@ function stopRealtimeVideo({ deviceId, channels = [1, 2], closeType = 2 }) {
   }
 }
 
-// Start/Stop endpoints
 app.post("/api/video/:deviceId/start", (req, res) => {
   const deviceId = req.params.deviceId;
   const channels = Array.isArray(req.body?.channels) ? req.body.channels : [1, 2];
@@ -230,7 +248,7 @@ startJT808Server({
     broadcast({ type: "gps", deviceId, data: loc });
   },
   onSocket: ({ deviceId, socket }) => {
-    const sess = getOrInitSession(deviceId, socket);
+    getOrInitSession(deviceId, socket);
     console.log("[JT808] session ready", { deviceId });
 
     if (process.env.AUTO_START_VIDEO === "1") {
@@ -244,47 +262,17 @@ startJT808Server({
   onLog: (line) => console.log("[JT808]", line)
 });
 
-// Start JT1078 UDP receiver (demo stats + raw forwarding)
+// Start JT1078 UDP receiver
 startJT1078Udp({
   port: Number(process.env.JT1078_UDP_PORT ?? 7001),
-  onPacket: ({ deviceId, channel, payloadType, dataBody }) => {
-    // Total stats per device
-    let s = state.videoStats.get(deviceId);
-    if (!s) s = { bytes: 0, packets: 0, lastTs: Date.now(), perChannel: new Map() };
+  onPacket: (p) => updateVideoStats(p),
+  onLog: (line) => console.log("[JT1078]", line)
+});
 
-    s.bytes += dataBody.length;
-    s.packets += 1;
-    s.lastTs = Date.now();
-
-    // Per-channel stats
-    const ch = Number(channel);
-    let cs = s.perChannel.get(ch);
-    if (!cs) cs = { bytes: 0, packets: 0, lastTs: 0 };
-    cs.bytes += dataBody.length;
-    cs.packets += 1;
-    cs.lastTs = Date.now();
-    s.perChannel.set(ch, cs);
-
-    state.videoStats.set(deviceId, s);
-
-    // Broadcast packet metadata to all connected browsers
-    broadcast({
-      type: "video",
-      deviceId,
-      data: {
-        channel: ch,
-        payloadType,
-        size: dataBody.length
-      }
-    });
-
-    // Broadcast per-channel stats too (for CH1/CH2 panels)
-    broadcast({
-      type: "video_stats",
-      deviceId,
-      data: { channel: ch, ...cs }
-    });
-  },
+// Start JT1078 TCP receiver (some terminals use TCP streaming)
+startJT1078Tcp({
+  port: Number(process.env.JT1078_TCP_PORT ?? 7001),
+  onPacket: (p) => updateVideoStats(p),
   onLog: (line) => console.log("[JT1078]", line)
 });
 
@@ -293,4 +281,5 @@ server.listen(PORT, () => {
   console.log(`Web app running at http://localhost:${PORT}`);
   console.log(`JT808 TCP gateway on port ${process.env.JT808_PORT ?? 6808}`);
   console.log(`JT1078 UDP receiver on port ${process.env.JT1078_UDP_PORT ?? 7001}`);
+  console.log(`JT1078 TCP receiver on port ${process.env.JT1078_TCP_PORT ?? 7001}`);
 });
