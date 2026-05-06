@@ -56,12 +56,18 @@ export function encodeRealtimeAv9101({
 }) {
   let ipBuf = Buffer.from(String(serverIp), "ascii");
   if (pad21) {
-    // Truncate to 21 bytes if necessary, then zero-pad to exactly 21
+    if (ipBuf.length > 21) {
+      // Some device firmwares require exactly 21 bytes; truncate with a warning
+      // so callers know their address was clipped.
+      const truncated = ipBuf.subarray(0, 21).toString("ascii");
+      console.warn(`[JT808] encodeRealtimeAv9101: serverIp "${serverIp}" (${ipBuf.length} bytes) truncated to 21 bytes ("${truncated}") for pad21 variant`);
+    }
+    // Zero-pad (or truncate) to exactly 21 bytes
     const fixed = Buffer.alloc(21, 0);
     ipBuf.subarray(0, 21).copy(fixed);
     ipBuf = fixed;
   } else if (ipBuf.length > 127) {
-    throw new Error("serverIp too long (max 127 bytes)");
+    throw new Error(`serverIp too long: ${ipBuf.length} bytes (max 127)`);
   }
 
   const body = Buffer.alloc(1 + ipBuf.length + 2 + 2 + 1 + 1 + 1);

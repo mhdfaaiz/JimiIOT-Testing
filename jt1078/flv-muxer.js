@@ -124,7 +124,7 @@ export function makeAVCNALUTag(nalUnits, isKeyframe, ts) {
  * @returns {Buffer}
  */
 function buildAVCDecoderConfig(sps, pps) {
-  if (!sps || sps.length < 4) throw new Error("SPS too short to build AVCDecoderConfig");
+  if (!sps || sps.length < 4) throw new Error(`SPS too short to build AVCDecoderConfig (length: ${sps?.length ?? 0}, minimum: 4)`);
   // Fixed header (6) + SPS len(2) + SPS + num_pps(1) + PPS len(2) + PPS
   const out = Buffer.allocUnsafe(11 + sps.length + pps.length);
   let o = 0;

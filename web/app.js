@@ -244,10 +244,8 @@ function stopVideoStream() {
 function setVidStatus(state, text) {
   const dot  = document.getElementById("vidDot");
   const span = document.getElementById("vidStatusText");
-  dot.className = "dot" +
-    (state === "connected" ? " connected" :
-     state === "error"     ? " error"     :
-     state === "connecting"? " warn"      : "");
+  const dotModifiers = { connected: " connected", error: " error", connecting: " warn" };
+  dot.className = "dot" + (dotModifiers[state] || "");
   span.textContent = text;
 }
 
@@ -255,7 +253,8 @@ function setVidCodecBadge(codec) {
   const badge = document.getElementById("vidCodecBadge");
   if (!codec) { badge.style.display = "none"; return; }
   badge.textContent = codec.toUpperCase();
-  badge.className   = "badge " + (codec === "h265" ? "h265" : codec === "h264" ? "h264" : "unknown");
+  const codecClasses = { h264: "h264", h265: "h265" };
+  badge.className = "badge " + (codecClasses[codec] || "unknown");
   badge.style.display = "";
 }
 
