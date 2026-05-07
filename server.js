@@ -358,9 +358,12 @@ function awaitGeneralResponse(sess, replySeq, timeoutMs = 3000) {
  * Build variant list for 0x9101 retry.
  * Tries spec-compliant variable-length IP and fixed-21-byte-padded IP,
  * each with UDP-only, TCP-only, and both-ports combinations.
+ *
+ * When JT808_9101_ALLOW_ZERO_PORTS=0, only variants where both tcpPort and
+ * udpPort are non-zero are included (var_both and pad_both).
  */
 function buildVariants({ tcpPort, udpPort }) {
-  return [
+  const all = [
     { name: "var_udp",  tcpPort: 0,    udpPort,    pad21: false },
     { name: "var_tcp",  tcpPort,       udpPort: 0, pad21: false },
     { name: "var_both", tcpPort,       udpPort,    pad21: false },
@@ -368,6 +371,10 @@ function buildVariants({ tcpPort, udpPort }) {
     { name: "pad_tcp",  tcpPort,       udpPort: 0, pad21: true  },
     { name: "pad_both", tcpPort,       udpPort,    pad21: true  }
   ];
+  if (process.env.JT808_9101_ALLOW_ZERO_PORTS === "0") {
+    return all.filter(v => v.tcpPort !== 0 && v.udpPort !== 0);
+  }
+  return all;
 }
 
 // 0x9101 generalRsp result codes
@@ -386,12 +393,14 @@ async function startRealtimeVideoAuto({ deviceId, channels = [1, 2], dataType = 
   const tcpPort  = Number(process.env.JT1078_TCP_PORT ?? 7001);
   const udpPort  = Number(process.env.JT1078_UDP_PORT ?? 7001);
   const variants = buildVariants({ tcpPort, udpPort });
+  console.log("[JT808] 0x9101 variants to try", { deviceId, channels, variantNames: variants.map(v => v.name) });
   const results  = [];
 
   for (const ch of channels) {
     let channelOk = false;
 
     for (const v of variants) {
+      console.log("[JT808] 0x9101 trying variant", { deviceId, channel: Number(ch), variant: v.name, tcpPort: v.tcpPort, udpPort: v.udpPort, pad21: v.pad21 });
       const replySeq = send9101Variant(sess, {
         deviceId,
         channel: ch,
@@ -490,6 +499,11 @@ startJT808Server({
     if (sess) {
       sess.authenticated = true;
       console.log("[JT808] authenticated", { deviceId });
+
+      if (process.env.REGISTER_ON_AUTH === "1") {
+        sess.registered = true;
+        console.log("[JT808] REGISTER_ON_AUTH: inferring registration from auth", { deviceId });
+      }
 
       if (process.env.AUTO_START_VIDEO === "1") {
         // Small delay so the auth ACK is flushed to the device before we push 0x9101
