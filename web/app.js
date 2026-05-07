@@ -1,4 +1,4 @@
-/* ─── WebSocket setup (dashboard / stats) ────────────────────────────────── */
+/* ─── WebSocket setup ────────────────────────────────────────────────────── */
 const proto  = location.protocol === "https:" ? "wss://" : "ws://";
 const ws     = new WebSocket(proto + location.host);
 
@@ -6,15 +6,15 @@ const wsDot    = document.getElementById("wsDot");
 const wsStatus = document.getElementById("wsStatus");
 
 ws.onopen = () => {
-  wsDot.className     = "dot connected";
+  wsDot.className    = "dot connected";
   wsStatus.textContent = "Connected to server";
 };
 ws.onclose = () => {
-  wsDot.className     = "dot error";
+  wsDot.className    = "dot error";
   wsStatus.textContent = "Disconnected — reload to reconnect";
 };
 ws.onerror = () => {
-  wsDot.className     = "dot error";
+  wsDot.className    = "dot error";
   wsStatus.textContent = "WebSocket error";
 };
 
@@ -50,7 +50,79 @@ function setVideoStats(channel, stats) {
   setText(`${prefix}Last`,    stats.lastTs  ? fmtTs(stats.lastTs)           : "-");
 }
 
-/* ─── Dashboard WebSocket message handler ───────────────────────────────── */
+/* ─── Video player ──────────────────────────────────────────────────────── */
+const videoPlayers = {};   // "deviceId:channel" → flvjs.Player
+
+function initVideoPlayer(deviceId, channel) {
+  if (typeof flvjs === "undefined" || !flvjs.isSupported()) {
+    console.warn("flv.js not supported in this browser");
+    return;
+  }
+
+  const key = `${deviceId}:${channel}`;
+  if (videoPlayers[key]) return;               // already running
+
+  const elId = `videoEl${channel}`;
+  const el   = document.getElementById(elId);
+  if (!el) return;
+
+  const wsProto = location.protocol === "https:" ? "wss" : "ws";
+  const url     = `${wsProto}://${location.host}/ws/video?device=${encodeURIComponent(deviceId)}&channel=${channel}`;
+
+  const player = flvjs.createPlayer(
+    { type: "flv", isLive: true, url },
+    { enableWorker: false, lazyLoad: false }
+  );
+  player.attachMediaElement(el);
+  player.load();
+  player.play().catch(() => {});
+  videoPlayers[key] = player;
+
+  console.log("[video] player started", { deviceId, channel, url });
+}
+
+function destroyVideoPlayer(deviceId, channel) {
+  const key = `${deviceId}:${channel}`;
+  const p = videoPlayers[key];
+  if (!p) return;
+  try { p.destroy(); } catch { /* ignore */ }
+  delete videoPlayers[key];
+}
+
+/* ─── Start Video button ────────────────────────────────────────────────── */
+let currentVideoDeviceId = null;
+
+document.getElementById("startVideoBtn")?.addEventListener("click", () => {
+  const deviceId = currentVideoDeviceId
+                || document.getElementById("gDevice")?.textContent?.trim();
+  if (!deviceId || deviceId === "-" || deviceId === "") {
+    document.getElementById("videoStatus").textContent = "⚠ No device connected yet";
+    return;
+  }
+
+  document.getElementById("videoStatus").textContent = "Sending 0x9101…";
+
+  fetch(`/api/video/${encodeURIComponent(deviceId)}/start`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ channels: [1, 2], dataType: 1, streamType: 0 })
+  })
+    .then((r) => r.json())
+    .then((d) => {
+      console.log("[video] start result", d);
+      const ok = d.results?.some((r) => r.result === 0 || r.status === "success");
+      document.getElementById("videoStatus").textContent = ok
+        ? "✅ 0x9101 accepted — connecting players…"
+        : "⚠ 0x9101 failed — see console";
+      [1, 2].forEach((ch) => initVideoPlayer(deviceId, ch));
+    })
+    .catch((err) => {
+      console.error("[video] start error", err);
+      document.getElementById("videoStatus").textContent = "❌ API error — see console";
+    });
+});
+
+/* ─── Message handler ────────────────────────────────────────────────────── */
 ws.onmessage = (ev) => {
   let msg;
   try { msg = JSON.parse(ev.data); } catch { return; }
@@ -83,12 +155,8 @@ ws.onmessage = (ev) => {
       `${d.speedKmh?.toFixed(1)}km/h  acc=${d.accOn ? "on" : "off"}`
     );
 
-    // Auto-populate device ID in video controls if not yet filled
-    const vidDeviceInput = document.getElementById("vidDevice");
-    if (!vidDeviceInput.value) {
-      vidDeviceInput.value = msg.deviceId;
-      setVidStatus("idle", "Device auto-detected — press Start Stream");
-    }
+    // Track most-recently-seen GPS device for the Start Video button
+    if (msg.deviceId && msg.deviceId !== "-") currentVideoDeviceId = msg.deviceId;
   }
 
   if (msg.type === "video") {
@@ -107,169 +175,4 @@ ws.onmessage = (ev) => {
   if (msg.type === "video_stats") {
     setVideoStats(msg.data?.channel, msg.data);
   }
-
-  if (msg.type === "stream_status") {
-    const { channel, codec, active } = msg.data ?? {};
-    const vidChannel = Number(document.getElementById("vidChannel").value);
-    const vidDevice  = document.getElementById("vidDevice").value.trim();
-
-    // Only update player status if this event is for the stream we're watching
-    if (msg.deviceId === vidDevice && Number(channel) === vidChannel) {
-      if (codec === "h265") {
-        showH265Warning();
-      } else if (codec === "h264") {
-        setVidCodecBadge("h264");
-      }
-      if (active) {
-        setVidStatus("connected", "Streaming…");
-      }
-    }
-  }
 };
-
-/* ─── Video player (flv.js) ─────────────────────────────────────────────── */
-let flvPlayer    = null;
-let playerActive = false;
-
-const vidStartBtn  = document.getElementById("vidStartBtn");
-const vidStopBtn   = document.getElementById("vidStopBtn");
-const vidNoStream  = document.getElementById("vidNoStream");
-const vidH265Warn  = document.getElementById("vidH265Warning");
-const videoEl      = document.getElementById("videoPlayer");
-
-vidStartBtn.addEventListener("click", () => {
-  const deviceId = document.getElementById("vidDevice").value.trim();
-  const channel  = Number(document.getElementById("vidChannel").value);
-
-  if (!deviceId) {
-    alert("Please enter a Device ID (or wait for a GPS update to auto-detect).");
-    return;
-  }
-
-  startVideoStream(deviceId, channel);
-});
-
-vidStopBtn.addEventListener("click", () => {
-  stopVideoStream();
-  setVidStatus("idle", "Stopped");
-  vidNoStream.style.display = "block";
-});
-
-function startVideoStream(deviceId, channel) {
-  stopVideoStream(); // clean up previous session
-
-  vidH265Warn.style.display = "none";
-  vidNoStream.style.display = "none";
-  videoEl.style.display = "block";
-  setVidStatus("connecting", "Connecting…");
-  setVidCodecBadge(null);
-
-  if (typeof flvjs === "undefined" || !flvjs.isSupported()) {
-    setVidStatus("error", "flv.js not supported in this browser");
-    vidNoStream.style.display = "block";
-    videoEl.style.display = "none";
-    return;
-  }
-
-  const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
-  const url = `${wsProto}//${location.host}/ws/video?device=${encodeURIComponent(deviceId)}&channel=${channel}`;
-
-  const player = flvjs.createPlayer(
-    { type: "flv", isLive: true, url, hasAudio: false, hasVideo: true },
-    { enableWorker: false, enableStashBuffer: false, stashInitialSize: 128, lazyLoad: false }
-  );
-
-  player.attachMediaElement(videoEl);
-  player.load();
-
-  // flv.js play() returns void, not a Promise — guard with optional chaining
-  const playPromise = player.play();
-  if (playPromise && typeof playPromise.catch === "function") {
-    playPromise.catch(() => {
-      // Autoplay blocked by browser – user must click play manually
-      setVidStatus("connecting", "Waiting for stream (click ▶ on the video to play)…");
-    });
-  }
-
-  player.on(flvjs.Events.ERROR, (errType, errDetail, errInfo) => {
-    console.warn("[flvjs] error", errType, errDetail, errInfo);
-    if (errType === "MediaError") {
-      setVidStatus("error", `Media error: ${errDetail}`);
-    } else if (errType === "NetworkError") {
-      setVidStatus("error", "Stream disconnected");
-    } else {
-      setVidStatus("error", `Error: ${errType} – ${errDetail}`);
-    }
-  });
-
-  player.on(flvjs.Events.MEDIA_INFO, (info) => {
-    setVidStatus("connected", "Playing live stream");
-    if (info?.codec) {
-      setVidCodecBadge(info.codec.toLowerCase().includes("265") ? "h265" : "h264");
-    }
-  });
-
-  flvPlayer = player;
-  playerActive = true;
-
-  vidStartBtn.style.display = "none";
-  vidStopBtn.style.display  = "";
-
-  // Trigger server to send 0x9101 to the device
-  fetch(`/api/video/${encodeURIComponent(deviceId)}/start`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ channels: [channel], dataType: 1, streamType: 0 })
-  })
-    .then((r) => r.json())
-    .then((d) => {
-      if (d.ok) {
-        const ok = d.results?.find((r) => r.status === "success");
-        if (ok) {
-          setVidStatus("connected", `Stream started (${ok.variant})`);
-        } else {
-          setVidStatus("connecting", "0x9101 sent, waiting for stream…");
-        }
-      }
-    })
-    .catch(() => {
-      // Non-fatal: device might already be streaming
-    });
-}
-
-function stopVideoStream() {
-  if (flvPlayer) {
-    try { flvPlayer.destroy(); } catch { /* */ }
-    flvPlayer = null;
-  }
-  playerActive = false;
-  videoEl.style.display = "none";
-  vidNoStream.style.display = "block";
-  vidStartBtn.style.display = "";
-  vidStopBtn.style.display  = "none";
-}
-
-/* ─── Video status helpers ───────────────────────────────────────────────── */
-function setVidStatus(state, text) {
-  const dot  = document.getElementById("vidDot");
-  const span = document.getElementById("vidStatusText");
-  const dotModifiers = { connected: " connected", error: " error", connecting: " warn" };
-  dot.className = "dot" + (dotModifiers[state] || "");
-  span.textContent = text;
-}
-
-function setVidCodecBadge(codec) {
-  const badge = document.getElementById("vidCodecBadge");
-  if (!codec) { badge.style.display = "none"; return; }
-  badge.textContent = codec.toUpperCase();
-  const codecClasses = { h264: "h264", h265: "h265" };
-  badge.className = "badge " + (codecClasses[codec] || "unknown");
-  badge.style.display = "";
-}
-
-function showH265Warning() {
-  vidH265Warn.style.display = "block";
-  setVidStatus("error", "H.265 codec — browser playback unavailable");
-  setVidCodecBadge("h265");
-  stopVideoStream();
-}

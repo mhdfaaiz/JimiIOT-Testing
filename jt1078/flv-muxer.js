@@ -1,242 +1,238 @@
 /**
- * Minimal FLV-over-WebSocket muxer for H.264 live streaming.
+ * Minimal FLV muxer for H.264 video from reassembled JT/T 1078 frames.
  *
- * The output is a valid FLV byte-stream that can be piped directly to a
- * WebSocket client and consumed by flv.js in the browser.
- *
- * Only H.264/AVC video is supported for browser playback.  H.265/HEVC is
- * detected and signalled so the caller can inform the client gracefully.
+ * Produces a valid FLV byte-stream suitable for flv.js browser playback.
+ * Only video (H.264) is handled; audio is intentionally skipped for now.
  */
 
-// ─── FLV container helpers ────────────────────────────────────────────────────
+// ── FLV primitives ────────────────────────────────────────────────────────────
 
 /**
- * Build the 13-byte stream prefix that must be sent once per WebSocket client.
- *   9 bytes – FLV file header
- *   4 bytes – PreviousTagSize0 (always 0)
- *
- * @returns {Buffer}
+ * Return a 13-byte FLV file header.
+ *   "FLV" + version(1) + flags(1=audio,4=video,5=both) + dataOffset(4) + PreviousTagSize0(4)
  */
-export function makeFLVHeader() {
-  const buf = Buffer.allocUnsafe(13);
-  buf[0] = 0x46; // 'F'
-  buf[1] = 0x4c; // 'L'
-  buf[2] = 0x56; // 'V'
-  buf[3] = 0x01; // version 1
-  // TypeFlags: bit0 = video present, bit2 = audio present
-  // video-only → 0x01
-  buf[4] = 0x01;
-  buf.writeUInt32BE(9, 5); // DataOffset = 9
-  buf.writeUInt32BE(0, 9); // PreviousTagSize0 = 0
-  return buf;
+export function flvFileHeader() {
+  const b = Buffer.alloc(13);
+  b.write("FLV", 0, "ascii");
+  b.writeUInt8(0x01, 3);   // version 1
+  b.writeUInt8(0x04, 4);   // video only
+  b.writeUInt32BE(9, 5);   // DataOffset = 9
+  b.writeUInt32BE(0, 9);   // PreviousTagSize0
+  return b;
 }
 
 /**
- * Wrap video/audio/script data in a single FLV tag + trailing PreviousTagSize.
- *
- * @param {number} tagType  – 8=audio, 9=video, 18=script
- * @param {Buffer} data     – tag payload
- * @param {number} timestamp – milliseconds (32-bit, wraps at ~49 days)
- * @returns {Buffer}
+ * Build one FLV tag (header + payload + PreviousTagSize).
+ * @param {number} tagType  8=audio  9=video  18=script
+ * @param {Buffer} payload
+ * @param {number} timestampMs  presentation timestamp in ms
  */
-function makeTag(tagType, data, timestamp) {
-  const ts = (timestamp >>> 0); // ensure unsigned 32-bit
-  const tagBodySize = 11 + data.length;
-  const buf = Buffer.allocUnsafe(tagBodySize + 4);
-
-  buf[0] = tagType & 0xff;
-  // DataSize (24-bit big-endian)
-  buf[1] = (data.length >> 16) & 0xff;
-  buf[2] = (data.length >> 8) & 0xff;
-  buf[3] = data.length & 0xff;
-  // Timestamp lower 24 bits (big-endian) + TimestampExtended (upper 8 bits)
-  buf[4] = (ts >> 16) & 0xff;
-  buf[5] = (ts >> 8) & 0xff;
-  buf[6] = ts & 0xff;
-  buf[7] = (ts >> 24) & 0xff; // TimestampExtended
-  // StreamID – always 0 (3 bytes)
-  buf[8] = 0;
-  buf[9] = 0;
-  buf[10] = 0;
-  data.copy(buf, 11);
-  // PreviousTagSize = 11 (tag header) + data.length
-  buf.writeUInt32BE(tagBodySize, tagBodySize);
-  return buf;
+function flvTag(tagType, payload, timestampMs) {
+  const ts  = Math.max(0, timestampMs >>> 0);
+  const hdr = Buffer.alloc(11);
+  hdr.writeUInt8(tagType, 0);
+  hdr.writeUIntBE(payload.length, 1, 3);
+  hdr.writeUIntBE(ts & 0xffffff, 4, 3);
+  hdr.writeUInt8((ts >>> 24) & 0xff, 7);
+  hdr.writeUIntBE(0, 8, 3);                // stream ID = 0
+  const prevSize = Buffer.alloc(4);
+  prevSize.writeUInt32BE(11 + payload.length);
+  return Buffer.concat([hdr, payload, prevSize]);
 }
 
-// ─── H.264 / AVC video tag builders ──────────────────────────────────────────
+// ── H.264 helpers ─────────────────────────────────────────────────────────────
+
+// NAL unit types referenced in the muxer
+const NALU_TYPE_SPS    = 7;
+const NALU_TYPE_PPS    = 8;
+const NALU_TYPE_AUD    = 9;   // Access Unit Delimiter — not muxed into FLV
+const NALU_TYPE_FILLER = 12;  // Filler data — not muxed into FLV
 
 /**
- * Build an AVC sequence-header FLV tag (AVCDecoderConfigurationRecord).
- * This must be sent once before any NALU tags.  Send again whenever the
- * stream restarts or SPS/PPS change.
+ * Parse an H.264 Annex B bitstream into individual NAL unit Buffers
+ * (start codes stripped, no zero-byte padding).
  *
- * @param {Buffer} sps       – raw SPS NAL unit bytes (no start code)
- * @param {Buffer} pps       – raw PPS NAL unit bytes (no start code)
- * @param {number} [ts=0]    – timestamp in ms
- * @returns {Buffer}
- */
-export function makeAVCSequenceHeaderTag(sps, pps, ts = 0) {
-  const avcCfg = buildAVCDecoderConfig(sps, pps);
-  // Video data: [FrameType|CodecID][AVCPacketType][CompositionTime(3)]
-  const videoData = Buffer.allocUnsafe(5 + avcCfg.length);
-  videoData[0] = (1 << 4) | 7; // FrameType=1(keyframe), CodecID=7(AVC)
-  videoData[1] = 0;             // AVCPacketType=0 (sequence header)
-  videoData[2] = 0;             // CompositionTime (3 bytes, = 0)
-  videoData[3] = 0;
-  videoData[4] = 0;
-  avcCfg.copy(videoData, 5);
-  return makeTag(9, videoData, ts);
-}
-
-/**
- * Build an AVC NALU FLV video tag from one or more raw NAL unit buffers.
- *
- * @param {Buffer[]} nalUnits – raw NAL unit buffers (no start codes)
- * @param {boolean}  isKeyframe
- * @param {number}   ts        – timestamp in ms
- * @returns {Buffer}
- */
-export function makeAVCNALUTag(nalUnits, isKeyframe, ts) {
-  // Convert each NAL unit to AVCC format: 4-byte big-endian length prefix
-  const avccParts = nalUnits.map((nal) => {
-    const lenBuf = Buffer.allocUnsafe(4);
-    lenBuf.writeUInt32BE(nal.length, 0);
-    return Buffer.concat([lenBuf, nal]);
-  });
-  const avccData = Buffer.concat(avccParts);
-
-  const videoData = Buffer.allocUnsafe(5 + avccData.length);
-  videoData[0] = ((isKeyframe ? 1 : 2) << 4) | 7; // FrameType | CodecID=7
-  videoData[1] = 1;  // AVCPacketType=1 (NALUs)
-  videoData[2] = 0;  // CompositionTime
-  videoData[3] = 0;
-  videoData[4] = 0;
-  avccData.copy(videoData, 5);
-  return makeTag(9, videoData, ts);
-}
-
-/**
- * Build the AVCDecoderConfigurationRecord from raw SPS and PPS NAL units.
- *
- * @param {Buffer} sps
- * @param {Buffer} pps
- * @returns {Buffer}
- */
-function buildAVCDecoderConfig(sps, pps) {
-  if (!sps || sps.length < 4) throw new Error(`SPS too short to build AVCDecoderConfig (length: ${sps?.length ?? 0}, minimum: 4)`);
-  // Fixed header (6) + SPS len(2) + SPS + num_pps(1) + PPS len(2) + PPS
-  const out = Buffer.allocUnsafe(11 + sps.length + pps.length);
-  let o = 0;
-  out[o++] = 0x01;       // configurationVersion
-  out[o++] = sps[1];     // AVCProfileIndication
-  out[o++] = sps[2];     // profile_compatibility
-  out[o++] = sps[3];     // AVCLevelIndication
-  out[o++] = 0xff;       // lengthSizeMinusOne = 3 → 4-byte length prefixes
-  out[o++] = 0xe1;       // numSequenceParameterSets = 1 (0b11100001)
-  out.writeUInt16BE(sps.length, o); o += 2;
-  sps.copy(out, o); o += sps.length;
-  out[o++] = 0x01;       // numPictureParameterSets = 1
-  out.writeUInt16BE(pps.length, o); o += 2;
-  pps.copy(out, o); o += pps.length;
-  return out.subarray(0, o);
-}
-
-// ─── Annex B NAL unit parsing ─────────────────────────────────────────────────
-
-/**
- * Split an Annex-B encoded buffer (start-code delimited) into individual
- * raw NAL unit buffers, with the start codes removed.
- *
- * If no start codes are found the whole buffer is returned as a single NAL unit.
+ * Supports both 3-byte (00 00 01) and 4-byte (00 00 00 01) start codes.
  *
  * @param {Buffer} buf
  * @returns {Buffer[]}
  */
-export function splitAnnexBNalUnits(buf) {
-  // Collect the position of every start-code and the first byte of the NAL unit that follows.
-  const sc = []; // { scPos, nalPos }
-  for (let i = 0; i < buf.length; i++) {
-    if (buf[i] !== 0x00) continue;
-    if (i + 2 < buf.length && buf[i + 1] === 0x00 && buf[i + 2] === 0x01) {
-      sc.push({ scPos: i, nalPos: i + 3 });
-      i += 2;
-    } else if (i + 3 < buf.length && buf[i + 1] === 0x00 && buf[i + 2] === 0x00 && buf[i + 3] === 0x01) {
-      sc.push({ scPos: i, nalPos: i + 4 });
-      i += 3;
+export function parseAnnexB(buf) {
+  if (!buf || buf.length === 0) return [];
+  const nalus = [];
+  const len   = buf.length;
+  let i = 0;
+
+  while (i < len) {
+    // Detect start code
+    let sc = 0;
+    if (i + 3 < len && buf[i] === 0 && buf[i+1] === 0 && buf[i+2] === 0 && buf[i+3] === 1) sc = 4;
+    else if (i + 2 < len && buf[i] === 0 && buf[i+1] === 0 && buf[i+2] === 1) sc = 3;
+    else { i++; continue; }
+
+    const start = i + sc;
+    // Scan for the next start code
+    let end = start;
+    while (end < len) {
+      if (end + 3 < len && buf[end] === 0 && buf[end+1] === 0 && buf[end+2] === 0 && buf[end+3] === 1) break;
+      if (end + 2 < len && buf[end] === 0 && buf[end+1] === 0 && buf[end+2] === 1) break;
+      end++;
     }
+    if (end > start) nalus.push(buf.slice(start, end));
+    i = end;
   }
-
-  if (sc.length === 0) {
-    return buf.length > 0 ? [buf] : [];
-  }
-
-  const units = [];
-  for (let j = 0; j < sc.length; j++) {
-    const { nalPos } = sc[j];
-    // NAL unit ends just before the start-code of the next unit (or at buffer end).
-    const end = j + 1 < sc.length ? sc[j + 1].scPos : buf.length;
-    if (end > nalPos) units.push(buf.subarray(nalPos, end));
-  }
-  return units.filter((u) => u.length > 0);
+  return nalus;
 }
 
-// ─── Codec detection & NAL classification ────────────────────────────────────
+/**
+ * Build an AVCDecoderConfigurationRecord from raw SPS and PPS NAL buffers.
+ * @param {Buffer} sps  SPS NAL unit (no start code)
+ * @param {Buffer} pps  PPS NAL unit (no start code)
+ * @returns {Buffer|null}
+ */
+function buildAvcConfig(sps, pps) {
+  if (!sps || sps.length < 4 || !pps) return null;
+  const r = Buffer.alloc(11 + sps.length + pps.length);
+  let o = 0;
+  r.writeUInt8(1,        o++);              // configurationVersion = 1
+  r.writeUInt8(sps[1],   o++);              // AVCProfileIndication
+  r.writeUInt8(sps[2],   o++);              // profile_compatibility
+  r.writeUInt8(sps[3],   o++);              // AVCLevelIndication
+  r.writeUInt8(0xff,     o++);              // reserved(6) | lengthSizeMinusOne(2)=3 → 4-byte lengths
+  r.writeUInt8(0xe1,     o++);              // reserved(3) | numSPS(5)=1
+  r.writeUInt16BE(sps.length, o); o += 2;
+  sps.copy(r, o); o += sps.length;
+  r.writeUInt8(1,        o++);              // numPPS = 1
+  r.writeUInt16BE(pps.length, o); o += 2;
+  pps.copy(r, o);
+  return r;
+}
 
 /**
- * Detect the video codec from a raw frame buffer.
- * Inspects NAL unit type bytes after splitting on Annex-B start codes.
- *
- * @param {Buffer} buf
- * @returns {'h264'|'h265'|'unknown'}
+ * Convert an array of raw NAL unit Buffers to AVCC format
+ * (each preceded by a 4-byte big-endian length).
+ * @param {Buffer[]} nalus
+ * @returns {Buffer}
  */
-export function detectCodec(buf) {
-  if (!buf || buf.length === 0) return "unknown";
-  const nals = splitAnnexBNalUnits(buf);
-  for (const nal of nals) {
-    if (nal.length === 0) continue;
-    const byte0 = nal[0];
+function nalusToAvcc(nalus) {
+  if (nalus.length === 0) return Buffer.alloc(0);
+  return Buffer.concat(
+    nalus.flatMap(n => {
+      const l = Buffer.alloc(4);
+      l.writeUInt32BE(n.length);
+      return [l, n];
+    })
+  );
+}
 
-    // H.264 NAL unit type occupies bits[4:0] of the first byte.
-    // Types 1–23 are H.264 VCL / non-VCL units.
-    const h264Type = byte0 & 0x1f;
-    if (h264Type >= 1 && h264Type <= 23) return "h264";
+// ── FlvMuxer ──────────────────────────────────────────────────────────────────
 
-    // H.265 NAL unit type occupies bits[6:1] of the first byte (nal_unit_type).
-    // Types 0–47 are H.265 units; VPS=32, SPS=33, PPS=34; IDR=19/20.
-    // Bit 7 of the first byte must be 0 (forbidden_zero_bit).
-    if ((byte0 & 0x80) === 0) {
-      const h265Type = (byte0 & 0x7e) >> 1;
-      if (h265Type >= 0 && h265Type <= 47) return "h265";
+/**
+ * Per-subscriber FLV muxer for live H.264 streams.
+ *
+ * Usage:
+ *   const mux = new FlvMuxer();
+ *   ws.send(mux.header(), { binary: true });           // once on connect
+ *
+ *   // If SPS/PPS already available from a previous frame, prime immediately:
+ *   if (cachedSps && cachedPps) {
+ *     mux.prime(cachedSps, cachedPps);
+ *     mux.getSeqHeader().forEach(c => ws.send(c, { binary: true }));
+ *   }
+ *
+ *   // For each assembled JT1078 video frame:
+ *   mux.push(frame).forEach(c => ws.send(c, { binary: true }));
+ */
+export class FlvMuxer {
+  constructor() {
+    this._sps     = null;
+    this._pps     = null;
+    this._seqSent = false;
+    this._t0      = null;   // wall-clock ms of first frame (used for relative timestamps)
+  }
+
+  /** Return the FLV file header Buffer (send once to each subscriber). */
+  header() { return flvFileHeader(); }
+
+  /**
+   * Pre-populate SPS/PPS so getSeqHeader() can be called immediately.
+   * @param {Buffer} sps
+   * @param {Buffer} pps
+   */
+  prime(sps, pps) {
+    this._sps = Buffer.from(sps);
+    this._pps = Buffer.from(pps);
+  }
+
+  /**
+   * Emit the AVC sequence header FLV tag if SPS/PPS are available and not yet sent.
+   * @returns {Buffer[]}
+   */
+  getSeqHeader() {
+    if (!this._sps || !this._pps || this._seqSent) return [];
+    const rec = buildAvcConfig(this._sps, this._pps);
+    if (!rec) return [];
+    const pl = Buffer.alloc(5 + rec.length);
+    pl.writeUInt8(0x17, 0);          // keyframe(1) | AVC codec(7)
+    pl.writeUInt8(0x00, 1);          // AVCPacketType = sequence header
+    pl.writeUIntBE(0, 2, 3);         // compositionTime = 0
+    rec.copy(pl, 5);
+    this._seqSent = true;
+    return [flvTag(9, pl, 0)];
+  }
+
+  /**
+   * Process one reassembled video frame and return FLV chunk Buffers to send.
+   *
+   * @param {{ payloadType: string, data: Buffer, timestampMs?: number }} frame
+   * @returns {Buffer[]}
+   */
+  push({ payloadType, data, timestampMs }) {
+    if (!payloadType || !payloadType.startsWith("video")) return [];
+    const isKey = payloadType === "video-I";
+    return this._processH264(data, isKey, timestampMs ?? null);
+  }
+
+  _processH264(buf, isKey, tsMs) {
+    const out = [];
+
+    if (this._t0 === null) this._t0 = tsMs ?? Date.now();
+    const relMs = tsMs != null
+      ? Math.max(0, tsMs - this._t0)
+      : Math.max(0, Date.now() - this._t0);
+
+    const nalus = parseAnnexB(buf);
+    if (nalus.length === 0) return out;
+
+    const dataNalus = [];
+    let spsUpdated = false;
+    let ppsUpdated = false;
+
+    for (const n of nalus) {
+      const naluType = n[0] & 0x1f;
+      if      (naluType === NALU_TYPE_SPS)    { this._sps = n; spsUpdated = true; }
+      else if (naluType === NALU_TYPE_PPS)    { this._pps = n; ppsUpdated = true; }
+      else if (naluType === NALU_TYPE_AUD || naluType === NALU_TYPE_FILLER) { /* skip */ }
+      else dataNalus.push(n);
     }
-  }
-  return "unknown";
-}
 
-/**
- * Extract SPS and PPS NAL units from a parsed NAL unit array.
- *
- * @param {Buffer[]} nalUnits
- * @returns {{ sps: Buffer|null, pps: Buffer|null }}
- */
-export function extractSPSPPS(nalUnits) {
-  let sps = null;
-  let pps = null;
-  for (const nal of nalUnits) {
-    if (nal.length === 0) continue;
-    const type = nal[0] & 0x1f;
-    if (type === 7) sps = nal;      // SPS
-    else if (type === 8) pps = nal; // PPS
-  }
-  return { sps, pps };
-}
+    // Emit AVC sequence header when SPS+PPS first available or when they change
+    if (this._sps && this._pps && (!this._seqSent || spsUpdated || ppsUpdated)) {
+      const seqChunks = this.getSeqHeader();
+      out.push(...seqChunks);
+    }
 
-/**
- * Return true if any NAL unit in the array is an H.264 IDR (keyframe).
- *
- * @param {Buffer[]} nalUnits
- * @returns {boolean}
- */
-export function isH264Keyframe(nalUnits) {
-  return nalUnits.some((nal) => nal.length > 0 && (nal[0] & 0x1f) === 5);
+    if (dataNalus.length === 0 || !this._seqSent) return out;
+
+    const avccBuf = nalusToAvcc(dataNalus);
+    const ft      = isKey ? 1 : 2;
+    const pl      = Buffer.alloc(5 + avccBuf.length);
+    pl.writeUInt8((ft << 4) | 7, 0);   // frameType | AVC codec
+    pl.writeUInt8(0x01, 1);             // AVCPacketType = NALU
+    pl.writeUIntBE(0, 2, 3);            // compositionTime
+    avccBuf.copy(pl, 5);
+    out.push(flvTag(9, pl, relMs));
+
+    return out;
+  }
 }

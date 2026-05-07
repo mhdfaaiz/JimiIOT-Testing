@@ -33,10 +33,16 @@ Open your browser at **http://localhost:3000**.
 |---|---|---|
 | `PORT` | `3000` | Web app HTTP + WebSocket |
 | `JT808_PORT` | `6808` | JT/T 808 TCP server (GPS) |
-| `JT1078_UDP_PORT` | `7001` | JT/T 1078 UDP server (video) |
+| `JT1078_UDP_PORT` | `7001` | JT/T 1078 UDP server port (set to `0` to disable UDP) |
+| `JT1078_TCP_PORT` | `7001` | JT/T 1078 TCP server port (set to `0` to disable TCP) |
+| `JT1078_PREFER_TCP` | `0` | Set to `1` to try TCP variants before UDP in 0x9101 |
+| `PUBLIC_IP` | _(auto-detect)_ | Public IP sent to device in 0x9101 |
+| `VIDEO_SERVER_IP` | _(falls back to PUBLIC_IP)_ | Override IP for video server in 0x9101 |
+| `REGISTER_ON_AUTH` | `0` | Set to `1` to mark device as registered on successful auth (for devices that skip 0x0100) |
+| `JT808_9101_ALLOW_ZERO_PORTS` | `1` | Set to `0` to only send 0x9101 variants with non-zero TCP and UDP ports |
 
 ```bash
-PORT=8080 JT808_PORT=6808 JT1078_UDP_PORT=7001 npm start
+PORT=8080 JT808_PORT=6808 JT1078_UDP_PORT=7001 JT1078_TCP_PORT=7001 npm start
 ```
 
 ---
@@ -46,7 +52,8 @@ PORT=8080 JT808_PORT=6808 JT1078_UDP_PORT=7001 npm start
 | Port | Protocol | Purpose |
 |---|---|---|
 | `6808` (or `$JT808_PORT`) | **TCP** | JT/T 808 gateway — GPS, heartbeat, auth |
-| `7001` (or `$JT1078_UDP_PORT`) | **UDP** | JT/T 1078 stream receiver — live video packets |
+| `7001` (or `$JT1078_UDP_PORT`) | **UDP** | JT/T 1078 stream receiver — live video packets (UDP) |
+| `7001` (or `$JT1078_TCP_PORT`) | **TCP** | JT/T 1078 stream receiver — live video packets (TCP) |
 
 Configure the same IP address and ports in your Jimi IoT / JC371 device settings.
 
@@ -135,4 +142,99 @@ The recommended path for JC371 is:
 
 ## License
 
-MIT" 
+MIT
+
+---
+
+## Troubleshooting
+
+### Device authenticates (0x0102) but does not send registration (0x0100)
+
+Some Jimi IoT / JC371 firmware versions skip the registration step and go straight to authentication.
+This causes `/api/devices` to show `registered:false`, and many firmwares will then reject the
+`0x9101` realtime A/V start command with `result=1 (failure)`.
+
+**Fix:** Set the `REGISTER_ON_AUTH=1` environment variable to infer registration from a successful auth.
+
+```bash
+REGISTER_ON_AUTH=1 npm start
+# or in PM2 ecosystem.config.js: env: { REGISTER_ON_AUTH: "1" }
+```
+
+When enabled, the server will log:
+```
+[JT808] REGISTER_ON_AUTH: inferring registration from auth { deviceId: '...' }
+```
+
+---
+
+### 0x9101 realtime video start fails with result=1 (failure)
+
+1. **Set your public IP** so the device can reach the video server:
+
+   ```bash
+   PUBLIC_IP=1.2.3.4 npm start
+   # or set VIDEO_SERVER_IP=1.2.3.4 for a separate video server address
+   ```
+
+2. **Enable registration-from-auth** if the device skips 0x0100 (see above):
+
+   ```bash
+   REGISTER_ON_AUTH=1 PUBLIC_IP=1.2.3.4 npm start
+   ```
+
+3. **Restrict 0x9101 to non-zero port variants.** By default all six port combination variants
+   are tried, including those with `tcpPort=0` or `udpPort=0`. Some firmware rejects these.
+   To only send variants where both ports are non-zero (`var_both` and `pad_both`), set:
+
+   ```bash
+   JT808_9101_ALLOW_ZERO_PORTS=0 npm start
+   ```
+
+   The default value (`1`) preserves the original behaviour of trying all six variants."
+
+---
+
+### Force TCP streaming (0x9101)
+
+Some SIM/mobile networks block outbound UDP, so the device can acknowledge `0x9101` successfully
+but never deliver video packets via UDP. If you verified TCP works (e.g. `tcpdump` shows packets on
+TCP 7001 but not UDP 7001), force TCP streaming:
+
+1. **Set UDP port to 0** so UDP-only variants are skipped automatically:
+
+   ```bash
+   JT1078_UDP_PORT=0 JT1078_TCP_PORT=7001 npm start
+   ```
+
+   With `JT1078_UDP_PORT=0` the server automatically removes `var_udp`/`pad_udp` from the
+   variant list and moves TCP variants to the front of the retry order.
+
+2. **Optionally set `JT1078_PREFER_TCP=1`** to force TCP-first ordering even when both ports
+   are non-zero (useful when the device incorrectly ACKs UDP variants):
+
+   ```bash
+   JT1078_PREFER_TCP=1 JT1078_TCP_PORT=7001 JT1078_UDP_PORT=0 npm start
+   ```
+
+3. **PM2 users** — update your `ecosystem.config.js` and restart:
+
+   ```js
+   env: {
+     JT1078_TCP_PORT: "7001",
+     JT1078_UDP_PORT: "0",
+     JT1078_PREFER_TCP: "1",
+   }
+   ```
+
+   ```bash
+   pm2 restart <id> --update-env
+   ```
+
+The server will log the computed `tcpPort`/`udpPort` and the final accepted variant so you can
+confirm the correct transport was selected:
+
+```
+[JT808] 0x9101 variants to try { ..., tcpPort: 7001, udpPort: 0, variantNames: ['var_tcp', 'pad_tcp', 'var_both', 'pad_both'] }
+[JT808] 0x9101 accepted { ..., variant: 'var_tcp', tcpPort: 7001, udpPort: 0 }
+```
