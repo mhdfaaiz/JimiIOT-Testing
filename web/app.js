@@ -45,10 +45,82 @@ function setVideoStats(channel, stats) {
   if (ch !== 1 && ch !== 2) return;
 
   const prefix = ch === 1 ? "ch1" : "ch2";
-  setText(`${prefix}Bytes`, stats.bytes != null ? String(stats.bytes) : "-");
+  setText(`${prefix}Bytes`,   stats.bytes   != null ? String(stats.bytes)   : "-");
   setText(`${prefix}Packets`, stats.packets != null ? String(stats.packets) : "-");
-  setText(`${prefix}Last`, stats.lastTs ? fmtTs(stats.lastTs) : "-");
+  setText(`${prefix}Last`,    stats.lastTs  ? fmtTs(stats.lastTs)           : "-");
 }
+
+/* ─── Video player ──────────────────────────────────────────────────────── */
+const videoPlayers = {};   // "deviceId:channel" → flvjs.Player
+
+function initVideoPlayer(deviceId, channel) {
+  if (typeof flvjs === "undefined" || !flvjs.isSupported()) {
+    console.warn("flv.js not supported in this browser");
+    return;
+  }
+
+  const key = `${deviceId}:${channel}`;
+  if (videoPlayers[key]) return;               // already running
+
+  const elId = `videoEl${channel}`;
+  const el   = document.getElementById(elId);
+  if (!el) return;
+
+  const wsProto = location.protocol === "https:" ? "wss" : "ws";
+  const url     = `${wsProto}://${location.host}/ws/video?device=${encodeURIComponent(deviceId)}&channel=${channel}`;
+
+  const player = flvjs.createPlayer(
+    { type: "flv", isLive: true, url },
+    { enableWorker: false, lazyLoad: false }
+  );
+  player.attachMediaElement(el);
+  player.load();
+  player.play().catch(() => {});
+  videoPlayers[key] = player;
+
+  console.log("[video] player started", { deviceId, channel, url });
+}
+
+function destroyVideoPlayer(deviceId, channel) {
+  const key = `${deviceId}:${channel}`;
+  const p = videoPlayers[key];
+  if (!p) return;
+  try { p.destroy(); } catch { /* ignore */ }
+  delete videoPlayers[key];
+}
+
+/* ─── Start Video button ────────────────────────────────────────────────── */
+let currentVideoDeviceId = null;
+
+document.getElementById("startVideoBtn")?.addEventListener("click", () => {
+  const deviceId = currentVideoDeviceId
+                || document.getElementById("gDevice")?.textContent?.trim();
+  if (!deviceId || deviceId === "-" || deviceId === "") {
+    document.getElementById("videoStatus").textContent = "⚠ No device connected yet";
+    return;
+  }
+
+  document.getElementById("videoStatus").textContent = "Sending 0x9101…";
+
+  fetch(`/api/video/${encodeURIComponent(deviceId)}/start`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ channels: [1, 2], dataType: 1, streamType: 0 })
+  })
+    .then((r) => r.json())
+    .then((d) => {
+      console.log("[video] start result", d);
+      const ok = d.results?.some((r) => r.result === 0 || r.status === "success");
+      document.getElementById("videoStatus").textContent = ok
+        ? "✅ 0x9101 accepted — connecting players…"
+        : "⚠ 0x9101 failed — see console";
+      [1, 2].forEach((ch) => initVideoPlayer(deviceId, ch));
+    })
+    .catch((err) => {
+      console.error("[video] start error", err);
+      document.getElementById("videoStatus").textContent = "❌ API error — see console";
+    });
+});
 
 /* ─── Message handler ────────────────────────────────────────────────────── */
 ws.onmessage = (ev) => {
@@ -58,14 +130,13 @@ ws.onmessage = (ev) => {
   if (msg.type === "gps") {
     const d = msg.data;
 
-    // Show GPS panel (hidden until first data)
     document.getElementById("nodata").style.display  = "none";
     document.getElementById("gpsData").style.display = "";
 
     document.getElementById("gDevice").textContent  = msg.deviceId;
     document.getElementById("gTime").textContent    = d.ts ?? "-";
-    document.getElementById("gLat").textContent     = d.lat != null ? d.lat.toFixed(6) + "°" : "-";
-    document.getElementById("gLng").textContent     = d.lng != null ? d.lng.toFixed(6) + "°" : "-";
+    document.getElementById("gLat").textContent     = d.lat  != null ? d.lat.toFixed(6)  + "°" : "-";
+    document.getElementById("gLng").textContent     = d.lng  != null ? d.lng.toFixed(6)  + "°" : "-";
     document.getElementById("gSpeed").textContent   = d.speedKmh != null ? d.speedKmh.toFixed(1) + " km/h" : "-";
     document.getElementById("gHeading").textContent = d.heading != null ? d.heading + "°" : "-";
     document.getElementById("gAlt").textContent     = d.altitude != null ? d.altitude + " m" : "-";
@@ -83,6 +154,9 @@ ws.onmessage = (ev) => {
       `[${d.ts ?? "?"}]  ${d.lat?.toFixed(6)},${d.lng?.toFixed(6)}  ` +
       `${d.speedKmh?.toFixed(1)}km/h  acc=${d.accOn ? "on" : "off"}`
     );
+
+    // Track most-recently-seen GPS device for the Start Video button
+    if (msg.deviceId && msg.deviceId !== "-") currentVideoDeviceId = msg.deviceId;
   }
 
   if (msg.type === "video") {

@@ -15,7 +15,7 @@ function findFrame(buffer) {
 /**
  * Start the JT/T 808 TCP server.
  */
-export function startJT808Server({ port, onLocation, onLog, onSocket, onGeneralResponse }) {
+export function startJT808Server({ port, onLocation, onLog, onSocket, onGeneralResponse, onRegister, onAuth, onClose }) {
   const server = net.createServer((socket) => {
     onLog?.(`client connected from ${socket.remoteAddress}:${socket.remotePort}`);
     let buf = Buffer.alloc(0);
@@ -50,8 +50,10 @@ export function startJT808Server({ port, onLocation, onLog, onSocket, onGeneralR
             }
           }
 
-          const result = handleJT808Message(pkt, { onLocation, onLog, onGeneralResponse });
-          if (result?.ack8001) {
+          const result = handleJT808Message(pkt, { onLocation, onLog, onGeneralResponse, onRegister, onAuth });
+          if (result?.reg8100) {
+            socket.write(result.reg8100);
+          } else if (result?.ack8001) {
             socket.write(result.ack8001);
           }
         } catch (e) {
@@ -70,7 +72,10 @@ export function startJT808Server({ port, onLocation, onLog, onSocket, onGeneralR
       }
     });
 
-    socket.on("close", () => onLog?.("client disconnected"));
+    socket.on("close", () => {
+      onLog?.("client disconnected");
+      if (socket.__deviceId) onClose?.({ deviceId: socket.__deviceId });
+    });
     socket.on("error", (e) => onLog?.(`socket error: ${e.message}`));
   });
 

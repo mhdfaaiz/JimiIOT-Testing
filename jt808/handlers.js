@@ -39,7 +39,41 @@ export function encodePlatformGeneralResponse8001({ replySeq, respMsgId, result,
 }
 
 /**
+ * Encode JT/T 808 v2019 0x8100 Terminal Registration Reply.
+ * @param {object} opts
+ * @param {number} opts.replySeq       Serial number of the 0x0100 message being acknowledged.
+ * @param {number} [opts.result=0]     0=success, 1=already registered, 2=no vehicle, 3=already in DB, 4=blocked.
+ * @param {string} [opts.authCode]     Auth token returned to the terminal (only when result === 0).
+ * @param {Buffer} opts.deviceIdRaw10  10-byte device ID.
+ */
+export function encode8100RegistrationResponse({ replySeq, result = 0, authCode = "JT808", deviceIdRaw10 }) {
+  const codeBuf = result === 0 ? Buffer.from(String(authCode), "ascii") : Buffer.alloc(0);
+  const body    = Buffer.alloc(3 + codeBuf.length);
+  body.writeUInt16BE(replySeq & 0xffff, 0);
+  body.writeUInt8(result & 0xff, 2);
+  if (codeBuf.length > 0) codeBuf.copy(body, 3);
+
+  const header = buildHeaderV2019({
+    msgId:        0x8100,
+    bodyLen:      body.length,
+    deviceIdRaw10,
+    msgSeq:       replySeq,
+    protoVer:     0x01
+  });
+
+  const withoutChk = Buffer.concat([header, body]);
+  const chk = Buffer.from([xorChecksum(withoutChk)]);
+  return toFrame(Buffer.concat([withoutChk, chk]));
+}
+
+/**
  * Encode JT/T 808 v2019 0x9101 Real-Time Audio/Video Transmission Command.
+ *
+ * @param {boolean} [opts.pad21=false]
+ *   When false (default / spec-compliant) the serverIp field is variable-length:
+ *     1-byte length + N bytes.
+ *   When true (fixed-field / common vendor extension) the field is always 21 bytes:
+ *     1-byte length + 20-byte null-padded content.
  */
 export function encodeRealtimeAv9101({
   deviceIdRaw10,
@@ -49,15 +83,20 @@ export function encodeRealtimeAv9101({
   udpPort,
   channel,
   dataType = 1,
-  streamType = 0
+  streamType = 0,
+  pad21 = false
 }) {
-  const ipBuf = Buffer.from(String(serverIp), "ascii");
-  if (ipBuf.length > 21) throw new Error("serverIp too long (max 21 bytes)");
+  const ipRaw = String(serverIp);
+  if (ipRaw.length > 20) throw new Error("serverIp too long (max 20 bytes)");
+  const ipStr = Buffer.from(ipRaw, "ascii");
+  const fieldLen = pad21 ? 20 : ipStr.length;
+  const ipField  = Buffer.alloc(fieldLen, 0x00);
+  ipStr.copy(ipField, 0);
 
-  const body = Buffer.alloc(1 + ipBuf.length + 2 + 2 + 1 + 1 + 1);
+  const body = Buffer.alloc(1 + fieldLen + 2 + 2 + 1 + 1 + 1);
   let o = 0;
-  body.writeUInt8(ipBuf.length, o); o += 1;
-  ipBuf.copy(body, o); o += ipBuf.length;
+  body.writeUInt8(ipStr.length, o); o += 1;   // actual string length (not padded length)
+  ipField.copy(body, o); o += fieldLen;
   body.writeUInt16BE(tcpPort & 0xffff, o); o += 2;
   body.writeUInt16BE(udpPort & 0xffff, o); o += 2;
   body.writeUInt8(channel & 0xff, o); o += 1;
@@ -113,7 +152,7 @@ function decodeResultCode(code) {
 
 // ─── Message dispatcher ───────────────────────────────────────────────────────
 
-export function handleJT808Message(pkt, { onLocation, onLog, onGeneralResponse } = {}) {
+export function handleJT808Message(pkt, { onLocation, onLog, onGeneralResponse, onRegister, onAuth } = {}) {
   if (pkt.length < 18) throw new Error("packet too short for v2019 header");
 
   const msgId        = pkt.readUInt16BE(0);
@@ -129,6 +168,15 @@ export function handleJT808Message(pkt, { onLocation, onLog, onGeneralResponse }
 
   const ack = (r = 0) =>
     encodePlatformGeneralResponse8001({ replySeq: msgSeq, respMsgId: msgId, result: r, deviceIdRaw10 });
+
+  // 0x0100 — Terminal registration
+  if (msgId === 0x0100) {
+    onLog?.(`register   device=${deviceId}  seq=${msgSeq}`);
+    onRegister?.({ deviceId, msgSeq, deviceIdRaw10 });
+    return {
+      reg8100: encode8100RegistrationResponse({ replySeq: msgSeq, result: 0, authCode: "JT808", deviceIdRaw10 })
+    };
+  }
 
   // 0x0001 — General terminal response
   if (msgId === 0x0001) {
@@ -162,6 +210,7 @@ export function handleJT808Message(pkt, { onLocation, onLog, onGeneralResponse }
   // 0x0102 — Authentication (accept-all for demo)
   if (msgId === 0x0102) {
     onLog?.(`auth       device=${deviceId}  seq=${msgSeq}  protoVer=${protoVer}`);
+    onAuth?.({ deviceId, msgSeq });
     return { ack8001: ack(0) };
   }
 
