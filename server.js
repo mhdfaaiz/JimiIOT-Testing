@@ -359,22 +359,53 @@ function awaitGeneralResponse(sess, replySeq, timeoutMs = 3000) {
  * Tries spec-compliant variable-length IP and fixed-21-byte-padded IP,
  * each with UDP-only, TCP-only, and both-ports combinations.
  *
- * When JT808_9101_ALLOW_ZERO_PORTS=0, only variants where both tcpPort and
- * udpPort are non-zero are included (var_both and pad_both).
+ * Filtering:
+ * - If udpPort is 0, UDP-only variants (var_udp, pad_udp) are excluded.
+ * - If tcpPort is 0, TCP-only variants (var_tcp, pad_tcp) are excluded.
+ * - JT808_9101_ALLOW_ZERO_PORTS=0: additionally restrict to variants where
+ *   both tcpPort and udpPort are non-zero (var_both and pad_both).
+ *
+ * Ordering:
+ * - TCP variants come first when JT1078_PREFER_TCP=1 or udpPort is 0.
  */
 function buildVariants({ tcpPort, udpPort }) {
-  const all = [
+  const preferTcp = process.env.JT1078_PREFER_TCP === "1" || udpPort === 0;
+
+  // Two orderings: TCP-first vs UDP-first (original order)
+  const tcpFirst = [
+    { name: "var_tcp",  tcpPort,       udpPort: 0, pad21: false },
+    { name: "pad_tcp",  tcpPort,       udpPort: 0, pad21: true  },
+    { name: "var_both", tcpPort,       udpPort,    pad21: false },
+    { name: "pad_both", tcpPort,       udpPort,    pad21: true  },
+    { name: "var_udp",  tcpPort: 0,    udpPort,    pad21: false },
+    { name: "pad_udp",  tcpPort: 0,    udpPort,    pad21: true  },
+  ];
+  const udpFirst = [
     { name: "var_udp",  tcpPort: 0,    udpPort,    pad21: false },
     { name: "var_tcp",  tcpPort,       udpPort: 0, pad21: false },
     { name: "var_both", tcpPort,       udpPort,    pad21: false },
     { name: "pad_udp",  tcpPort: 0,    udpPort,    pad21: true  },
     { name: "pad_tcp",  tcpPort,       udpPort: 0, pad21: true  },
-    { name: "pad_both", tcpPort,       udpPort,    pad21: true  }
+    { name: "pad_both", tcpPort,       udpPort,    pad21: true  },
   ];
-  if (process.env.JT808_9101_ALLOW_ZERO_PORTS === "0") {
-    return all.filter(v => v.tcpPort !== 0 && v.udpPort !== 0);
+
+  let variants = preferTcp ? tcpFirst : udpFirst;
+
+  // Filter out UDP-only variants when no UDP port is configured
+  if (udpPort === 0) {
+    variants = variants.filter(v => v.name !== "var_udp" && v.name !== "pad_udp");
   }
-  return all;
+  // Filter out TCP-only variants when no TCP port is configured
+  if (tcpPort === 0) {
+    variants = variants.filter(v => v.name !== "var_tcp" && v.name !== "pad_tcp");
+  }
+
+  // Legacy: restrict to both-port variants only
+  if (process.env.JT808_9101_ALLOW_ZERO_PORTS === "0") {
+    variants = variants.filter(v => v.tcpPort !== 0 && v.udpPort !== 0);
+  }
+
+  return variants;
 }
 
 // 0x9101 generalRsp result codes
@@ -393,7 +424,7 @@ async function startRealtimeVideoAuto({ deviceId, channels = [1, 2], dataType = 
   const tcpPort  = Number(process.env.JT1078_TCP_PORT ?? 7001);
   const udpPort  = Number(process.env.JT1078_UDP_PORT ?? 7001);
   const variants = buildVariants({ tcpPort, udpPort });
-  console.log("[JT808] 0x9101 variants to try", { deviceId, channels, variantNames: variants.map(v => v.name) });
+  console.log("[JT808] 0x9101 variants to try", { deviceId, channels, tcpPort, udpPort, variantNames: variants.map(v => v.name) });
   const results  = [];
 
   for (const ch of channels) {
@@ -424,7 +455,16 @@ async function startRealtimeVideoAuto({ deviceId, channels = [1, 2], dataType = 
       results.push({ channel: Number(ch), variant: v.name, status: gr.resultName, result: gr.result });
 
       if (gr.result === RESULT_SUCCESS) {
-        console.log("[JT808] 0x9101 accepted", { deviceId, channel: Number(ch), variant: v.name });
+        // Guard against false-positive: device ACK'd a UDP-only variant but
+        // udpPort is 0 (no UDP server), or a TCP-only variant but tcpPort is 0.
+        // The device will try to stream to a port we're not listening on.
+        const isUdpOnly = v.tcpPort === 0 && v.udpPort !== 0;
+        const isTcpOnly = v.udpPort === 0 && v.tcpPort !== 0;
+        if ((isUdpOnly && udpPort === 0) || (isTcpOnly && tcpPort === 0)) {
+          console.log("[JT808] 0x9101 accepted but transport port is 0 — skipping", { deviceId, channel: Number(ch), variant: v.name });
+          continue;
+        }
+        console.log("[JT808] 0x9101 accepted", { deviceId, channel: Number(ch), variant: v.name, tcpPort: v.tcpPort, udpPort: v.udpPort });
         channelOk = true;
         break;
       }
