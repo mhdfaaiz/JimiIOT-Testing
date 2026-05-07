@@ -90,11 +90,28 @@
 
       <!-- Video panel -->
       <div class="card">
-        <h2>📹 Live Video Monitor (JT/T 1078)</h2>
+        <h2>📹 Live Video (JT/T 1078)</h2>
         <p style="font-size:0.85rem;color:#888;margin:0 0 10px;">
-          This page shows per-channel live packet activity (CH1 &amp; CH2) and a packet log.
-          Full video playback requires an additional transcoding pipeline.
+          Click <strong>Start Video</strong> to send 0x9101 to the device and open live players.
         </p>
+
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+          <button id="startVideoBtn" style="padding:6px 16px;font-size:0.9rem;cursor:pointer;">▶ Start Video</button>
+          <span id="videoStatus" style="font-size:0.82rem;color:#888;"></span>
+        </div>
+
+        <div class="two-col" style="margin-bottom:14px;">
+          <div>
+            <h3 style="margin-top:0;">Channel 1</h3>
+            <video id="videoEl1" controls muted playsinline
+              style="width:100%;background:#000;border-radius:6px;display:block;"></video>
+          </div>
+          <div>
+            <h3 style="margin-top:0;">Channel 2</h3>
+            <video id="videoEl2" controls muted playsinline
+              style="width:100%;background:#000;border-radius:6px;display:block;"></video>
+          </div>
+        </div>
 
         <h3>Channel activity</h3>
         <div class="two-col">
@@ -111,7 +128,7 @@
         </div>
 
         <h3 style="margin-top:14px;">Last packet</h3>
-        <div class="field"><span class="label">Last device</span>  <span class="value" id="vDevice">-</span></div>
+        <div class="field"><span class="label">Device</span>       <span class="value" id="vDevice">-</span></div>
         <div class="field"><span class="label">Channel</span>      <span class="value" id="vChannel">-</span></div>
         <div class="field"><span class="label">Payload type</span> <span class="value" id="vType">-</span></div>
         <div class="field"><span class="label">Packet size</span>  <span class="value" id="vSize">-</span></div>
@@ -122,6 +139,7 @@
 
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>
