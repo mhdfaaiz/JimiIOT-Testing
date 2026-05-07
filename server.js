@@ -370,6 +370,12 @@ function buildVariants({ tcpPort, udpPort }) {
   ];
 }
 
+// 0x9101 generalRsp result codes
+const RESULT_SUCCESS     = 0;
+const RESULT_FAILURE     = 1;
+const RESULT_MSG_ERROR   = 2;
+const RESULT_UNSUPPORTED = 3;
+
 async function startRealtimeVideoAuto({ deviceId, channels = [1, 2], dataType = 1, streamType = 0 }) {
   const sess = resolveSession(deviceId);
   if (!sess?.socket || sess.socket.destroyed) {
@@ -408,14 +414,14 @@ async function startRealtimeVideoAuto({ deviceId, channels = [1, 2], dataType = 
       const gr = r.gr;
       results.push({ channel: Number(ch), variant: v.name, status: gr.resultName, result: gr.result });
 
-      if (gr.result === 0) {
+      if (gr.result === RESULT_SUCCESS) {
         console.log("[JT808] 0x9101 accepted", { deviceId, channel: Number(ch), variant: v.name });
         channelOk = true;
         break;
       }
 
-      // result=3 "unsupported" — no value in trying more variants for this channel
-      if (gr.result === 3) {
+      // result=RESULT_UNSUPPORTED means device doesn't recognise 0x9101 — no value in more variants
+      if (gr.result === RESULT_UNSUPPORTED) {
         console.log("[JT808] 0x9101 unsupported — aborting variants", { deviceId, channel: Number(ch) });
         break;
       }

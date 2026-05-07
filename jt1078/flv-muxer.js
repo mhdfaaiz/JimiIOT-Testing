@@ -42,6 +42,12 @@ function flvTag(tagType, payload, timestampMs) {
 
 // ── H.264 helpers ─────────────────────────────────────────────────────────────
 
+// NAL unit types referenced in the muxer
+const NALU_TYPE_SPS    = 7;
+const NALU_TYPE_PPS    = 8;
+const NALU_TYPE_AUD    = 9;   // Access Unit Delimiter — not muxed into FLV
+const NALU_TYPE_FILLER = 12;  // Filler data — not muxed into FLV
+
 /**
  * Parse an H.264 Annex B bitstream into individual NAL unit Buffers
  * (start codes stripped, no zero-byte padding).
@@ -204,9 +210,9 @@ export class FlvMuxer {
 
     for (const n of nalus) {
       const naluType = n[0] & 0x1f;
-      if      (naluType === 7)  { this._sps = n; spsUpdated = true; }
-      else if (naluType === 8)  { this._pps = n; ppsUpdated = true; }
-      else if (naluType === 9 || naluType === 12) { /* AUD / filler — skip */ }
+      if      (naluType === NALU_TYPE_SPS)    { this._sps = n; spsUpdated = true; }
+      else if (naluType === NALU_TYPE_PPS)    { this._pps = n; ppsUpdated = true; }
+      else if (naluType === NALU_TYPE_AUD || naluType === NALU_TYPE_FILLER) { /* skip */ }
       else dataNalus.push(n);
     }
 

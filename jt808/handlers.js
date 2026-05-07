@@ -86,8 +86,9 @@ export function encodeRealtimeAv9101({
   streamType = 0,
   pad21 = false
 }) {
-  const ipStr    = Buffer.from(String(serverIp), "ascii");
-  if (ipStr.length > 20) throw new Error("serverIp too long (max 20 bytes)");
+  const ipRaw = String(serverIp);
+  if (ipRaw.length > 20) throw new Error("serverIp too long (max 20 bytes)");
+  const ipStr = Buffer.from(ipRaw, "ascii");
   const fieldLen = pad21 ? 20 : ipStr.length;
   const ipField  = Buffer.alloc(fieldLen, 0x00);
   ipStr.copy(ipField, 0);
