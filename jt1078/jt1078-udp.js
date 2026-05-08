@@ -66,9 +66,9 @@ export function startJT1078Udp({ port, onPacket, onLog }) {
         timestampMs = Number(msg.readBigUInt64BE(16));
       }
 
-      onLog?.(
-        `pkt seq=${seq} device=${deviceId} ch=${channel} type=${payloadType} subFlag=${subFlag} size=${dataBody.length}`
-      );
+      // onLog?.(
+      //   `pkt seq=${seq} device=${deviceId} ch=${channel} type=${payloadType} subFlag=${subFlag} size=${dataBody.length}`
+      // );
 
       onPacket?.({ deviceId, channel, payloadType, subFlag, seq, dataBody, timestampMs });
     } catch (e) {

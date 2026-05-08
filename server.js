@@ -288,6 +288,7 @@ function handleJT1078Packet(packet) {
   if (!packet.payloadType.startsWith("video")) return;
 
   const frame = reassembler.push(packet);
+  if(frame) console.log(`[Reassembler] FRAME COMPLETE ch=${frame.channel} size=${frame.data.length}`);
   if (!frame) return;
 
   const cid = canonicalId(frame.deviceId);

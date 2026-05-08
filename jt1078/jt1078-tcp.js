@@ -127,9 +127,9 @@ export function startJT1078Tcp({ port, onPacket, onLog }) {
         const parsed = parsePacket(pktBuf);
         if (!parsed) continue;
 
-        onLog?.(
-          `pkt(tcp) seq=${parsed.seq} device=${parsed.deviceId} ch=${parsed.channel} type=${parsed.payloadType} subFlag=${parsed.subFlag} size=${parsed.dataBody.length}`
-        );
+        // onLog?.(
+        //   `pkt(tcp) seq=${parsed.seq} device=${parsed.deviceId} ch=${parsed.channel} type=${parsed.payloadType} subFlag=${parsed.subFlag} size=${parsed.dataBody.length}`
+        // );
 
         onPacket?.(parsed);
       }
