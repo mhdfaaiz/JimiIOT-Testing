@@ -2,6 +2,7 @@ import express from "express";
 import http from "http";
 import path from "path";
 import os from "os";
+import { spawn } from "child_process";
 import { WebSocketServer, WebSocket } from "ws";
 import { fileURLToPath } from "url";
 
@@ -155,23 +156,65 @@ wssVideo.on("connection", (ws, req) => {
   const key = `${deviceId}:${channel}`;
   let ch = state.videoChannels.get(key);
   if (!ch) {
-    ch = { subs: new Set(), lastSps: null, lastPps: null };
+    ch = { subs: new Set(), ffmpeg: null };
     state.videoChannels.set(key, ch);
   }
 
   const sub = { ws };
-
-  // Note: Since we are using jMuxer, we no longer need to emit an FLV header.
-  // The raw H.265/H.264 stream will just be passed as-is to the frontend.
-
   ch.subs.add(sub);
   console.log(`[WS/video] subscriber connected { deviceId: '${deviceId}', channel: ${channel}, raw: '${rawDevice}' }`);
 
-  ws.on("close", () => {
+  // Start FFmpeg if not already running for this channel
+  if (!ch.ffmpeg) {
+    console.log(`[FFmpeg] Starting transcoder for channel ${key}`);
+    
+    // Read raw H.265 NALUs from stdin, output raw H.264 NALUs to stdout
+    ch.ffmpeg = spawn("ffmpeg", [
+      "-hide_banner",
+      "-loglevel", "error",
+      "-i", "pipe:0",               // Input from stdin
+      "-c:v", "libx264",            // Transcode to H.264
+      "-preset", "ultrafast",       // Lowest latency
+      "-tune", "zerolatency",       // Optimize for streaming
+      "-f", "h264",                 // Output format: raw H.264 bitstream
+      "pipe:1"                      // Output to stdout
+    ]);
+
+    // Handle FFmpeg output (broadcast transcoded chunks to WebSockets)
+    ch.ffmpeg.stdout.on("data", (data) => {
+      for (const s of ch.subs) {
+        if (s.ws.readyState === WebSocket.OPEN) {
+          try { s.ws.send(data, { binary: true }); } catch (e) {}
+        }
+      }
+    });
+
+    ch.ffmpeg.stderr.on("data", (data) => {
+      console.error(`[FFmpeg] ${key} error:`, data.toString().trim());
+    });
+
+    ch.ffmpeg.on("close", (code) => {
+      console.log(`[FFmpeg] ${key} transcoder exited with code ${code}`);
+      if (state.videoChannels.get(key)?.ffmpeg === ch.ffmpeg) {
+        state.videoChannels.get(key).ffmpeg = null;
+      }
+    });
+  }
+
+  const removeSub = () => {
     ch.subs.delete(sub);
-    console.log("[WS/video] subscriber left", { deviceId, channel });
-  });
-  ws.on("error", () => ch.subs.delete(sub));
+    console.log(`[WS/video] subscriber left`, { deviceId, channel });
+    
+    // Stop FFmpeg if no more subscribers
+    if (ch.subs.size === 0 && ch.ffmpeg) {
+      console.log(`[FFmpeg] Stopping transcoder for channel ${key} (0 subscribers)`);
+      ch.ffmpeg.kill("SIGKILL");
+      ch.ffmpeg = null;
+    }
+  };
+
+  ws.on("close", removeSub);
+  ws.on("error", removeSub);
 });
 
 // ── Static files ──────────────────────────────────────────────────────────────
@@ -287,13 +330,12 @@ function handleJT1078Packet(packet) {
 
 
 
-  // Forward raw video data to all active dashboard subscribers
-  for (const sub of ch.subs) {
-    if (sub.ws.readyState !== WebSocket.OPEN) continue;
+  // Feed raw video data into FFmpeg transcoder
+  if (ch.ffmpeg && ch.ffmpeg.stdin && ch.ffmpeg.stdin.writable) {
     try {
-      sub.ws.send(frame.data, { binary: true });
+      ch.ffmpeg.stdin.write(frame.data);
     } catch (e) {
-      console.error("[JT1078] WS send error:", e);
+      console.error("[FFmpeg] Stdin write error:", e);
     }
   }
 }

@@ -74,7 +74,7 @@ function initVideoPlayer(deviceId, channel) {
     mode: 'video',
     flv: false,
     debug: false,
-    codec: 'hevc',
+    codec: 'avc',
     onError: function(data) {
       console.error("[video] jMuxer error:", data, { deviceId, channel });
       document.getElementById("videoStatus").textContent = `⚠ Player Error - see console`;
