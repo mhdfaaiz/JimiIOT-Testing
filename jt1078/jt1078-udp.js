@@ -60,12 +60,17 @@ export function startJT1078Udp({ port, onPacket, onLog }) {
       
       if (msg.length < bodyOffset + bodyLen) return;
       const dataBody = msg.subarray(bodyOffset, bodyOffset + bodyLen);
+      
+      let timestampMs = null;
+      if (payloadNibble !== 4 && msg.length >= 24) {
+        timestampMs = Number(msg.readBigUInt64BE(16));
+      }
 
       onLog?.(
         `pkt seq=${seq} device=${deviceId} ch=${channel} type=${payloadType} subFlag=${subFlag} size=${dataBody.length}`
       );
 
-      onPacket?.({ deviceId, channel, payloadType, subFlag, seq, dataBody });
+      onPacket?.({ deviceId, channel, payloadType, subFlag, seq, dataBody, timestampMs });
     } catch (e) {
       onLog?.(`parse error from ${rinfo.address}:${rinfo.port}: ${e.message}`);
     }

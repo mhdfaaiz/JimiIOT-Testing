@@ -75,6 +75,12 @@ function initVideoPlayer(deviceId, channel) {
   );
   player.attachMediaElement(el);
   player.load();
+
+  player.on(flvjs.Events.ERROR, (errType, errDetail) => {
+    console.error("[video] flv.js error:", errType, errDetail, { deviceId, channel });
+    document.getElementById("videoStatus").textContent = `⚠ Player Error (${errType}) - see console`;
+  });
+
   player.play().catch(() => {});
   videoPlayers[key] = player;
 

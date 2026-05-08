@@ -49,7 +49,12 @@ function parsePacket(msg) {
   if (msg.length < bodyOffset + bodyLen) return null;
   const dataBody = msg.subarray(bodyOffset, bodyOffset + bodyLen);
 
-  return { deviceId, channel, payloadType, subFlag, seq, dataBody };
+  let timestampMs = null;
+  if (payloadNibble !== 4 && msg.length >= 24) {
+    timestampMs = Number(msg.readBigUInt64BE(16));
+  }
+
+  return { deviceId, channel, payloadType, subFlag, seq, dataBody, timestampMs };
 }
 
 /**

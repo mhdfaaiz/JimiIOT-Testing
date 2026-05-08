@@ -22,16 +22,16 @@ export class JT1078Reassembler {
    *   A complete assembled frame, or null if more sub-packets are needed.
    */
   push(packet) {
-    const { deviceId, channel, subFlag, payloadType, dataBody } = packet;
+    const { deviceId, channel, subFlag, payloadType, dataBody, timestampMs } = packet;
     const key = `${deviceId}:${channel}`;
 
     switch (subFlag) {
       case 0x00: {                                          // complete — no fragmentation
         this._pending.delete(key);
-        return { deviceId, channel, payloadType, data: Buffer.from(dataBody) };
+        return { deviceId, channel, payloadType, data: Buffer.from(dataBody), timestampMs };
       }
       case 0x01: {                                          // first sub-packet
-        this._pending.set(key, { buffers: [Buffer.from(dataBody)], payloadType });
+        this._pending.set(key, { buffers: [Buffer.from(dataBody)], payloadType, timestampMs });
         return null;
       }
       case 0x03: {                                          // middle sub-packet
@@ -46,7 +46,7 @@ export class JT1078Reassembler {
         st.buffers.push(Buffer.from(dataBody));
         const data = Buffer.concat(st.buffers);
         this._pending.delete(key);
-        return { deviceId, channel, payloadType: st.payloadType, data };
+        return { deviceId, channel, payloadType: st.payloadType, data, timestampMs: st.timestampMs };
       }
       default:
         return null;

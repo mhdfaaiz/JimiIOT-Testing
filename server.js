@@ -266,14 +266,20 @@ function updateVideoStats({ deviceId, channel, payloadType, dataBody }) {
   s.lastTs   = Date.now();
   const ch = Number(channel);
   let cs = s.perChannel.get(ch);
-  if (!cs) cs = { bytes: 0, packets: 0, lastTs: 0 };
+  if (!cs) cs = { bytes: 0, packets: 0, lastTs: 0, lastBroadcast: 0 };
   cs.bytes   += dataBody.length;
   cs.packets += 1;
   cs.lastTs   = Date.now();
   s.perChannel.set(ch, cs);
   state.videoStats.set(cid, s);
-  broadcast({ type: "video",       deviceId: cid, data: { channel: ch, payloadType, size: dataBody.length } });
-  broadcast({ type: "video_stats", deviceId: cid, data: { channel: ch, ...cs } });
+
+  // Throttle websocket broadcasts to prevent frontend UI freeze
+  const now = Date.now();
+  if (now - cs.lastBroadcast > 500) {
+    cs.lastBroadcast = now;
+    broadcast({ type: "video",       deviceId: cid, data: { channel: ch, payloadType, size: dataBody.length } });
+    broadcast({ type: "video_stats", deviceId: cid, data: { channel: ch, bytes: cs.bytes, packets: cs.packets, lastTs: cs.lastTs } });
+  }
 }
 
 function handleJT1078Packet(packet) {
@@ -422,9 +428,11 @@ async function startRealtimeVideoAuto({ deviceId, channels = [1, 2], dataType = 
 
   const serverIp = process.env.VIDEO_SERVER_IP || process.env.PUBLIC_IP || localIpGuess();
   const tcpPort  = Number(process.env.JT1078_TCP_PORT ?? 7001);
-  const udpPort  = Number(process.env.JT1078_UDP_PORT ?? 7001);
-  const variants = buildVariants({ tcpPort, udpPort });
-  console.log("[JT808] 0x9101 variants to try", { deviceId, channels, tcpPort, udpPort, variantNames: variants.map(v => v.name) });
+  const actualUdpPort = Number(process.env.JT1078_UDP_PORT ?? 7001);
+  // Some strict terminals reject 0x9101 if udpPort is 0, even if they stream via TCP.
+  const cmdUdpPort = actualUdpPort === 0 ? tcpPort : actualUdpPort;
+  const variants = buildVariants({ tcpPort, udpPort: cmdUdpPort });
+  console.log("[JT808] 0x9101 variants to try", { deviceId, channels, tcpPort, udpPort: cmdUdpPort, variantNames: variants.map(v => v.name) });
   const results  = [];
 
   for (const ch of channels) {
