@@ -75,7 +75,7 @@ function getOrInitSession(deviceId, socket) {
   if (!s) {
     s = {
       socket,
-      deviceIdRaw10:  Buffer.from(deviceId, "hex"),
+      deviceIdRaw:    Buffer.from(deviceId, "hex"),
       deviceIdShort:  canonicalId(deviceId),
       nextSeq:        1,
       registered:     false,
@@ -318,7 +318,7 @@ function handleJT1078Packet(packet) {
 function send9101Variant(sess, { deviceId, channel, dataType, streamType, serverIp, tcpPort, udpPort, pad21 }) {
   const msgSeq = sess.nextSeq++;
   const pkt = encodeRealtimeAv9101({
-    deviceIdRaw10: sess.deviceIdRaw10,
+    deviceIdRaw: sess.deviceIdRaw,
     msgSeq,
     serverIp,
     tcpPort,
@@ -494,7 +494,7 @@ function stopRealtimeVideo({ deviceId, channels = [1, 2], closeType = 2 }) {
   for (const ch of channels) {
     const msgSeq = sess.nextSeq++;
     const pkt = encodeRealtimeAvCtrl9102({
-      deviceIdRaw10: sess.deviceIdRaw10,
+      deviceIdRaw: sess.deviceIdRaw,
       msgSeq,
       channel: Number(ch),
       cmd: 0,

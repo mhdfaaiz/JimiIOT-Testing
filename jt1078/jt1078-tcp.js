@@ -34,12 +34,20 @@ function parsePacket(msg) {
 
   const payloadType = PAYLOAD_TYPE_NAMES[payloadNibble] ?? `0x${payloadNibble.toString(16)}`;
 
-  // NOTE: There are vendor variations on where body length starts.
-  // Current implementation keeps the original behavior:
-  // - body length at offset 24 (WORD)
-  // - body starts at offset 26
-  const bodyLen = msg.readUInt16BE(24);
-  const dataBody = msg.subarray(26, 26 + bodyLen);
+  // JT/T 1078-2016 structure: if video/audio, body length is at offset 28. If passthrough, offset 24.
+  let bodyLenOffset = 28;
+  let bodyOffset = 30;
+  if (payloadNibble === 4) {
+    bodyLenOffset = 24;
+    bodyOffset = 26;
+  }
+  
+  // Make sure we have enough data to read the body length
+  if (msg.length < bodyLenOffset + 2) return null;
+
+  const bodyLen = msg.readUInt16BE(bodyLenOffset);
+  if (msg.length < bodyOffset + bodyLen) return null;
+  const dataBody = msg.subarray(bodyOffset, bodyOffset + bodyLen);
 
   return { deviceId, channel, payloadType, subFlag, seq, dataBody };
 }
@@ -78,9 +86,29 @@ export function startJT1078Tcp({ port, onPacket, onLog }) {
           break;
         }
 
-        // body length at offset 24 relative to packet start
-        const bodyLen = buf.readUInt16BE(start + 24);
-        const pktLen = 26 + bodyLen;
+        // We need to determine the packet length. First check if we have enough to read the typeByte
+        if (buf.length < start + 16) {
+          if (start > 0) buf = buf.subarray(start);
+          break;
+        }
+
+        const typeByte = buf.readUInt8(start + 15);
+        const payloadNibble = (typeByte >> 4) & 0x0f;
+        
+        let bodyLenOffset = 28;
+        let bodyOffset = 30;
+        if (payloadNibble === 4) {
+          bodyLenOffset = 24;
+          bodyOffset = 26;
+        }
+
+        if (buf.length < start + bodyLenOffset + 2) {
+          if (start > 0) buf = buf.subarray(start);
+          break;
+        }
+
+        const bodyLen = buf.readUInt16BE(start + bodyLenOffset);
+        const pktLen = bodyOffset + bodyLen;
 
         if (buf.length < start + pktLen) {
           // wait for more

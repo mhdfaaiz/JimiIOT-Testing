@@ -47,10 +47,19 @@ export function startJT1078Udp({ port, onPacket, onLog }) {
 
       const payloadType = PAYLOAD_TYPE_NAMES[payloadNibble] ?? `0x${payloadNibble.toString(16)}`;
 
-      // Bytes 16–23: timestamp (8 bytes, only present for non-passthrough; safe to skip here)
-      // Body length at offset 24 (WORD), body starts at offset 26
-      const bodyLen = msg.readUInt16BE(24);
-      const dataBody = msg.subarray(26, 26 + bodyLen);
+      // JT/T 1078-2016 structure: if video/audio, body length is at offset 28. If passthrough, offset 24.
+      let bodyLenOffset = 28;
+      let bodyOffset = 30;
+      if (payloadNibble === 4) {
+        bodyLenOffset = 24;
+        bodyOffset = 26;
+      }
+      
+      if (msg.length < bodyLenOffset + 2) return;
+      const bodyLen = msg.readUInt16BE(bodyLenOffset);
+      
+      if (msg.length < bodyOffset + bodyLen) return;
+      const dataBody = msg.subarray(bodyOffset, bodyOffset + bodyLen);
 
       onLog?.(
         `pkt seq=${seq} device=${deviceId} ch=${channel} type=${payloadType} subFlag=${subFlag} size=${dataBody.length}`

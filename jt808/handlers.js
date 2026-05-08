@@ -5,32 +5,40 @@ function toFrame(unescapedWithoutDelimiters) {
   return Buffer.concat([Buffer.from([0x7e]), esc, Buffer.from([0x7e])]);
 }
 
-function buildHeaderV2019({ msgId, bodyLen, deviceIdRaw10, msgSeq, protoVer = 0x01 }) {
-  const header = Buffer.alloc(17);
-  header.writeUInt16BE(msgId & 0xffff, 0);
-  header.writeUInt16BE(bodyLen & 0x03ff, 2);
-  header.writeUInt8(protoVer & 0xff, 4);
-
-  const dev = deviceIdRaw10 ?? Buffer.alloc(10, 0x00);
-  dev.copy(header, 5);
-
-  header.writeUInt16BE(msgSeq & 0xffff, 15);
-  return header;
+function buildHeader({ msgId, bodyLen, deviceIdRaw, msgSeq }) {
+  const isV2019 = deviceIdRaw && deviceIdRaw.length === 10;
+  
+  if (isV2019) {
+    const header = Buffer.alloc(17);
+    header.writeUInt16BE(msgId & 0xffff, 0);
+    header.writeUInt16BE((bodyLen & 0x03ff) | 0x4000, 2);
+    header.writeUInt8(0x01, 4);
+    deviceIdRaw.copy(header, 5);
+    header.writeUInt16BE(msgSeq & 0xffff, 15);
+    return header;
+  } else {
+    const header = Buffer.alloc(12);
+    header.writeUInt16BE(msgId & 0xffff, 0);
+    header.writeUInt16BE(bodyLen & 0x03ff, 2);
+    const dev = deviceIdRaw ?? Buffer.alloc(6, 0x00);
+    dev.copy(header, 4);
+    header.writeUInt16BE(msgSeq & 0xffff, 10);
+    return header;
+  }
 }
 
-export function encodePlatformGeneralResponse8001({ replySeq, respMsgId, result, deviceIdRaw10 }) {
+export function encodePlatformGeneralResponse8001({ replySeq, respMsgId, result, deviceIdRaw }) {
   // Body: replySeq(2) + respMsgId(2) + result(1)
   const body = Buffer.alloc(5);
   body.writeUInt16BE(replySeq & 0xffff, 0);
   body.writeUInt16BE(respMsgId & 0xffff, 2);
   body.writeUInt8(result & 0xff, 4);
 
-  const header = buildHeaderV2019({
+  const header = buildHeader({
     msgId: 0x8001,
     bodyLen: body.length,
-    deviceIdRaw10,
-    msgSeq: replySeq,
-    protoVer: 0x01
+    deviceIdRaw,
+    msgSeq: replySeq
   });
 
   const withoutChk = Buffer.concat([header, body]);
@@ -44,21 +52,20 @@ export function encodePlatformGeneralResponse8001({ replySeq, respMsgId, result,
  * @param {number} opts.replySeq       Serial number of the 0x0100 message being acknowledged.
  * @param {number} [opts.result=0]     0=success, 1=already registered, 2=no vehicle, 3=already in DB, 4=blocked.
  * @param {string} [opts.authCode]     Auth token returned to the terminal (only when result === 0).
- * @param {Buffer} opts.deviceIdRaw10  10-byte device ID.
+ * @param {Buffer} opts.deviceIdRaw  Device ID buffer.
  */
-export function encode8100RegistrationResponse({ replySeq, result = 0, authCode = "JT808", deviceIdRaw10 }) {
+export function encode8100RegistrationResponse({ replySeq, result = 0, authCode = "JT808", deviceIdRaw }) {
   const codeBuf = result === 0 ? Buffer.from(String(authCode), "ascii") : Buffer.alloc(0);
   const body    = Buffer.alloc(3 + codeBuf.length);
   body.writeUInt16BE(replySeq & 0xffff, 0);
   body.writeUInt8(result & 0xff, 2);
   if (codeBuf.length > 0) codeBuf.copy(body, 3);
 
-  const header = buildHeaderV2019({
+  const header = buildHeader({
     msgId:        0x8100,
     bodyLen:      body.length,
-    deviceIdRaw10,
-    msgSeq:       replySeq,
-    protoVer:     0x01
+    deviceIdRaw,
+    msgSeq:       replySeq
   });
 
   const withoutChk = Buffer.concat([header, body]);
@@ -76,7 +83,7 @@ export function encode8100RegistrationResponse({ replySeq, result = 0, authCode 
  *     1-byte length + 20-byte null-padded content.
  */
 export function encodeRealtimeAv9101({
-  deviceIdRaw10,
+  deviceIdRaw,
   msgSeq,
   serverIp,
   tcpPort,
@@ -103,12 +110,11 @@ export function encodeRealtimeAv9101({
   body.writeUInt8(dataType & 0xff, o); o += 1;
   body.writeUInt8(streamType & 0xff, o); o += 1;
 
-  const header = buildHeaderV2019({
+  const header = buildHeader({
     msgId: 0x9101,
     bodyLen: body.length,
-    deviceIdRaw10,
-    msgSeq,
-    protoVer: 0x01
+    deviceIdRaw,
+    msgSeq
   });
 
   const withoutChk = Buffer.concat([header, body]);
@@ -119,19 +125,18 @@ export function encodeRealtimeAv9101({
 /**
  * Encode JT/T 808 v2019 0x9102 Real-time Audio/Video Transmission Control.
  */
-export function encodeRealtimeAvCtrl9102({ deviceIdRaw10, msgSeq, channel, cmd = 0, closeType = 2, switchStreamType = 0 }) {
+export function encodeRealtimeAvCtrl9102({ deviceIdRaw, msgSeq, channel, cmd = 0, closeType = 2, switchStreamType = 0 }) {
   const body = Buffer.alloc(4);
   body.writeUInt8(channel & 0xff, 0);
   body.writeUInt8(cmd & 0xff, 1);
   body.writeUInt8(closeType & 0xff, 2);
   body.writeUInt8(switchStreamType & 0xff, 3);
 
-  const header = buildHeaderV2019({
+  const header = buildHeader({
     msgId: 0x9102,
     bodyLen: body.length,
-    deviceIdRaw10,
-    msgSeq,
-    protoVer: 0x01
+    deviceIdRaw,
+    msgSeq
   });
 
   const withoutChk = Buffer.concat([header, body]);
@@ -153,28 +158,46 @@ function decodeResultCode(code) {
 // ─── Message dispatcher ───────────────────────────────────────────────────────
 
 export function handleJT808Message(pkt, { onLocation, onLog, onGeneralResponse, onRegister, onAuth } = {}) {
-  if (pkt.length < 18) throw new Error("packet too short for v2019 header");
+  if (pkt.length < 12) throw new Error("packet too short");
 
   const msgId        = pkt.readUInt16BE(0);
   const attr         = pkt.readUInt16BE(2);
   const bodyLen      = attr & 0x03ff;
-  const protoVer     = pkt.readUInt8(4);
-  const deviceIdRaw10 = Buffer.from(pkt.subarray(5, 15));
-  const deviceId     = deviceIdRaw10.toString("hex");
-  const msgSeq       = pkt.readUInt16BE(15);
+  const isV2019      = (attr & 0x4000) !== 0;
 
-  const headerLen = 17;
-  const body      = pkt.subarray(headerLen, headerLen + bodyLen);
+  let headerLen = 12;
+  let deviceIdRaw;
+  let msgSeq;
+  let protoVer = 0;
+
+  if (isV2019) {
+    if (pkt.length < 17) throw new Error("packet too short for v2019 header");
+    headerLen = 17;
+    protoVer = pkt.readUInt8(4);
+    deviceIdRaw = Buffer.from(pkt.subarray(5, 15));
+    msgSeq = pkt.readUInt16BE(15);
+  } else {
+    deviceIdRaw = Buffer.from(pkt.subarray(4, 10));
+    msgSeq = pkt.readUInt16BE(10);
+  }
+
+  const hasSubpackage = (attr & 0x2000) !== 0;
+  if (hasSubpackage) {
+    headerLen += 4;
+  }
+
+  const deviceId = deviceIdRaw.toString("hex");
+  const body = pkt.subarray(headerLen, headerLen + bodyLen);
 
   const ack = (r = 0) =>
-    encodePlatformGeneralResponse8001({ replySeq: msgSeq, respMsgId: msgId, result: r, deviceIdRaw10 });
+    encodePlatformGeneralResponse8001({ replySeq: msgSeq, respMsgId: msgId, result: r, deviceIdRaw });
 
   // 0x0100 — Terminal registration
   if (msgId === 0x0100) {
     onLog?.(`register   device=${deviceId}  seq=${msgSeq}`);
-    onRegister?.({ deviceId, msgSeq, deviceIdRaw10 });
+    onRegister?.({ deviceId, msgSeq, deviceIdRaw });
     return {
-      reg8100: encode8100RegistrationResponse({ replySeq: msgSeq, result: 0, authCode: "JT808", deviceIdRaw10 })
+      reg8100: encode8100RegistrationResponse({ replySeq: msgSeq, result: 0, authCode: "JT808", deviceIdRaw })
     };
   }
 
