@@ -171,7 +171,8 @@ wssVideo.on("connection", (ws, req) => {
     // Read raw H.265 NALUs from stdin, output raw H.264 NALUs to stdout
     ch.ffmpeg = spawn("ffmpeg", [
       "-hide_banner",
-      "-loglevel", "error",
+      "-loglevel", "warning",
+      "-f", "hevc",                 // Tell ffmpeg the input is raw HEVC
       "-i", "pipe:0",               // Input from stdin
       "-c:v", "libx264",            // Transcode to H.264
       "-preset", "ultrafast",       // Lowest latency
