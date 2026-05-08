@@ -428,9 +428,9 @@ async function startRealtimeVideoAuto({ deviceId, channels = [1, 2], dataType = 
 
   const serverIp = process.env.VIDEO_SERVER_IP || process.env.PUBLIC_IP || localIpGuess();
   const tcpPort  = Number(process.env.JT1078_TCP_PORT ?? 7001);
-  const actualUdpPort = Number(process.env.JT1078_UDP_PORT ?? 7001);
+  const udpPort  = Number(process.env.JT1078_UDP_PORT ?? 7001);
   // Some strict terminals reject 0x9101 if udpPort is 0, even if they stream via TCP.
-  const cmdUdpPort = actualUdpPort === 0 ? tcpPort : actualUdpPort;
+  const cmdUdpPort = udpPort === 0 ? tcpPort : udpPort;
   const variants = buildVariants({ tcpPort, udpPort: cmdUdpPort });
   console.log("[JT808] 0x9101 variants to try", { deviceId, channels, tcpPort, udpPort: cmdUdpPort, variantNames: variants.map(v => v.name) });
   const results  = [];
