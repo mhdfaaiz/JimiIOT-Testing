@@ -69,20 +69,31 @@ function initVideoPlayer(deviceId, channel) {
   const wsProto = location.protocol === "https:" ? "wss" : "ws";
   const url     = `${wsProto}://${location.host}/ws/video?device=${encodeURIComponent(deviceId)}&channel=${channel}`;
 
-  const player = flvjs.createPlayer(
-    { type: "flv", isLive: true, url },
-    { enableWorker: false, lazyLoad: false }
-  );
-  player.attachMediaElement(el);
-  player.load();
-
-  player.on(flvjs.Events.ERROR, (errType, errDetail) => {
-    console.error("[video] flv.js error:", errType, errDetail, { deviceId, channel });
-    document.getElementById("videoStatus").textContent = `⚠ Player Error (${errType}) - see console`;
+  const player = new JMuxer({
+    node: el,
+    mode: 'video',
+    flv: false,
+    debug: false,
+    codec: 'hevc',
+    onError: function(data) {
+      console.error("[video] jMuxer error:", data, { deviceId, channel });
+      document.getElementById("videoStatus").textContent = `⚠ Player Error - see console`;
+    }
   });
-
-  player.play().catch(() => {});
+  
   videoPlayers[key] = player;
+
+  const ws = new WebSocket(url);
+  ws.binaryType = "arraybuffer";
+  ws.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      const data = new Uint8Array(event.data);
+      player.feed({ video: data });
+    }
+  };
+  
+  // Store the ws so we can close it if needed
+  player.ws = ws;
 
   console.log("[video] player started", { deviceId, channel, url });
 }
@@ -92,6 +103,9 @@ function destroyVideoPlayer(deviceId, channel) {
   const p = videoPlayers[key];
   if (!p) return;
   try { p.destroy(); } catch { /* ignore */ }
+  if (p.ws) {
+    try { p.ws.close(); } catch { /* ignore */ }
+  }
   delete videoPlayers[key];
 }
 

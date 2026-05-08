@@ -10,7 +10,7 @@ import { startJT1078Udp }   from "./jt1078/jt1078-udp.js";
 import { startJT1078Tcp }   from "./jt1078/jt1078-tcp.js";
 import { encodeRealtimeAv9101, encodeRealtimeAvCtrl9102 } from "./jt808/handlers.js";
 import { JT1078Reassembler } from "./jt1078/reassembler.js";
-import { FlvMuxer, parseAnnexB } from "./jt1078/flv-muxer.js";
+import { parseAnnexB } from "./jt1078/flv-muxer.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -43,7 +43,7 @@ const state = {
   videoStats:      new Map(),   // canonical (12-char) deviceId → { bytes, packets, lastTs, perChannel }
   jt808Sessions:   new Map(),   // full 20-char deviceId → session
   sessionsByShortId: new Map(), // canonical 12-char deviceId → session  (alias index)
-  // "deviceId:channel" → { subs: Set<{ws, mux}>, lastSps: Buffer|null, lastPps: Buffer|null }
+  // "deviceId:channel" → { subs: Set<{ws}>, lastSps: Buffer|null, lastPps: Buffer|null }
   videoChannels:   new Map(),
   clients:         new Set()    // dashboard WebSocket clients
 };
@@ -152,8 +152,6 @@ wssVideo.on("connection", (ws, req) => {
 
   if (!deviceId) { ws.close(1008, "Missing device param"); return; }
 
-  console.log("[WS/video] subscriber connected", { deviceId, channel, raw: rawDevice });
-
   const key = `${deviceId}:${channel}`;
   let ch = state.videoChannels.get(key);
   if (!ch) {
@@ -161,25 +159,13 @@ wssVideo.on("connection", (ws, req) => {
     state.videoChannels.set(key, ch);
   }
 
-  const mux = new FlvMuxer();
-  const sub = { ws, mux };
+  const sub = { ws };
 
-  // Send FLV file header immediately
-  try {
-    ws.send(mux.header(), { binary: true });
-  } catch {
-    return;
-  }
-
-  // Prime with cached SPS/PPS so playback starts at the next data NAL
-  // (rather than waiting for the device to re-send SPS/PPS)
-  if (ch.lastSps && ch.lastPps) {
-    mux.prime(ch.lastSps, ch.lastPps);
-    const seqChunks = mux.getSeqHeader();
-    seqChunks.forEach(c => { try { ws.send(c, { binary: true }); } catch {} });
-  }
+  // Note: Since we are using jMuxer, we no longer need to emit an FLV header.
+  // The raw H.265/H.264 stream will just be passed as-is to the frontend.
 
   ch.subs.add(sub);
+  console.log(`[WS/video] subscriber connected { deviceId: '${deviceId}', channel: ${channel}, raw: '${rawDevice}' }`);
 
   ws.on("close", () => {
     ch.subs.delete(sub);
@@ -309,14 +295,14 @@ function handleJT1078Packet(packet) {
     }
   }
 
-  if (ch.subs.size === 0) return;
-
+  // Forward raw video data to all active dashboard subscribers
   for (const sub of ch.subs) {
     if (sub.ws.readyState !== WebSocket.OPEN) continue;
     try {
-      const chunks = sub.mux.push(frame);
-      for (const c of chunks) sub.ws.send(c, { binary: true });
-    } catch { /* closed WS — will be removed on next close event */ }
+      sub.ws.send(frame.data, { binary: true });
+    } catch (e) {
+      console.error("[JT1078] WS send error:", e);
+    }
   }
 }
 
