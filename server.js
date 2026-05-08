@@ -285,15 +285,7 @@ function handleJT1078Packet(packet) {
     state.videoChannels.set(key, ch);
   }
 
-  // Cache SPS/PPS at the channel level for priming late-joining subscribers
-  if (frame.payloadType === "video-I") {
-    const nalus = parseAnnexB(frame.data);
-    for (const n of nalus) {
-      const t = n[0] & 0x1f;
-      if (t === 7) ch.lastSps = n;
-      if (t === 8) ch.lastPps = n;
-    }
-  }
+
 
   // Forward raw video data to all active dashboard subscribers
   for (const sub of ch.subs) {
