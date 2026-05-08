@@ -210,8 +210,17 @@ export class FlvMuxer {
 
     for (const n of nalus) {
       const naluType = n[0] & 0x1f;
-      if      (naluType === NALU_TYPE_SPS)    { this._sps = n; spsUpdated = true; }
-      else if (naluType === NALU_TYPE_PPS)    { this._pps = n; ppsUpdated = true; }
+      const hevcType = (n[0] >> 1) & 0x3f;
+      
+      if (hevcType === 32 || hevcType === 33 || hevcType === 34) {
+        if (!this._warnedH265) {
+          console.warn("[FlvMuxer] ⚠ DETECTED H.265 (HEVC) STREAM! standard flv.js does not support this. type=", hevcType);
+          this._warnedH265 = true;
+        }
+      }
+
+      if      (naluType === NALU_TYPE_SPS)    { this._sps = n; spsUpdated = true; console.log("[FlvMuxer] Found H.264 SPS!"); }
+      else if (naluType === NALU_TYPE_PPS)    { this._pps = n; ppsUpdated = true; console.log("[FlvMuxer] Found H.264 PPS!"); }
       else if (naluType === NALU_TYPE_AUD || naluType === NALU_TYPE_FILLER) { /* skip */ }
       else dataNalus.push(n);
     }
@@ -220,9 +229,13 @@ export class FlvMuxer {
     if (this._sps && this._pps && (!this._seqSent || spsUpdated || ppsUpdated)) {
       const seqChunks = this.getSeqHeader();
       out.push(...seqChunks);
+      console.log("[FlvMuxer] SENT SEQUENCE HEADER (SPS/PPS)");
     }
 
-    if (dataNalus.length === 0 || !this._seqSent) return out;
+    if (dataNalus.length === 0 || !this._seqSent) {
+      if (!this._seqSent && dataNalus.length > 0) console.log("[FlvMuxer] Dropping frame because no SPS/PPS yet.");
+      return out;
+    }
 
     const avccBuf = nalusToAvcc(dataNalus);
     const ft      = isKey ? 1 : 2;
