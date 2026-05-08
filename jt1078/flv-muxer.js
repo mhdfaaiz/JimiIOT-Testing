@@ -202,7 +202,10 @@ export class FlvMuxer {
       : Math.max(0, Date.now() - this._t0);
 
     const nalus = parseAnnexB(buf);
-    if (nalus.length === 0) return out;
+    if (nalus.length === 0) {
+      if (buf.length > 10) console.warn("[FlvMuxer] ⚠ parseAnnexB found 0 NALUs! Buffer might be AVCC instead of AnnexB, or corrupted.");
+      return out;
+    }
 
     const dataNalus = [];
     let spsUpdated = false;
