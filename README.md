@@ -36,6 +36,7 @@ Open your browser at **http://localhost:3000**.
 | `JT1078_UDP_PORT` | `7001` | JT/T 1078 UDP server port (set to `0` to disable UDP) |
 | `JT1078_TCP_PORT` | `7001` | JT/T 1078 TCP server port (set to `0` to disable TCP) |
 | `JT1078_PREFER_TCP` | `0` | Set to `1` to try TCP variants before UDP in 0x9101 |
+| `VIDEO_CODEC` | _(auto-detect)_ | Force `h264` or `hevc` if the browser stays blank |
 | `PUBLIC_IP` | _(auto-detect)_ | Public IP sent to device in 0x9101 |
 | `VIDEO_SERVER_IP` | _(falls back to PUBLIC_IP)_ | Override IP for video server in 0x9101 |
 | `REGISTER_ON_AUTH` | `0` | Set to `1` to mark device as registered on successful auth (for devices that skip 0x0100) |
@@ -98,6 +99,7 @@ Configure the same IP address and ports in your Jimi IoT / JC371 device settings
 
 - Identifies packets by header magic `0x30 0x31 0x63 0x64` ("01cd").
 - Extracts: sequence number, BCD[6] device ID, logical channel, payload type, subpacket flag, body length, data body.
+- Reassembles fragmented video packets and starts FFmpeg with codec auto-detection, then broadcasts FLV to the browser over WebSocket.
 - Broadcasts packet metadata (device, channel, payload type, size) to the web dashboard over WebSocket.
 
 ### Web dashboard

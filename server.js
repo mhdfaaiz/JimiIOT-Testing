@@ -59,6 +59,105 @@ function canonicalId(deviceId) {
   return String(deviceId).toLowerCase().slice(0, 12);
 }
 
+function normalizeVideoCodec(value) {
+  const codec = String(value ?? "").trim().toLowerCase();
+  if (codec === "h264" || codec === "avc") return "h264";
+  if (codec === "h265" || codec === "hevc" || codec === "hvc1") return "hevc";
+  return null;
+}
+
+function alternateVideoCodec(codec) {
+  return codec === "h264" ? "hevc" : "h264";
+}
+
+function ffmpegInputFormatForCodec(codec) {
+  return codec === "h264" ? "h264" : "hevc";
+}
+
+function guessVideoCodec(data) {
+  if (!Buffer.isBuffer(data) || data.length < 4) return null;
+
+  let h264Score = 0;
+  let hevcScore = 0;
+  const sample = data.subarray(0, Math.min(data.length, 512));
+
+  for (let i = 0; i < sample.length - 4; i += 1) {
+    const isShortStart = sample[i] === 0x00 && sample[i + 1] === 0x00 && sample[i + 2] === 0x01;
+    const isLongStart = sample[i] === 0x00 && sample[i + 1] === 0x00 && sample[i + 2] === 0x00 && sample[i + 3] === 0x01;
+    if (!isShortStart && !isLongStart) continue;
+
+    const nalOffset = isShortStart ? i + 3 : i + 4;
+    if (nalOffset >= sample.length) break;
+
+    const firstByte = sample[nalOffset];
+    const h264Type = firstByte & 0x1f;
+    const hevcType = (firstByte >> 1) & 0x3f;
+
+    if (firstByte === 0x67 || firstByte === 0x68 || firstByte === 0x65 || firstByte === 0x61) h264Score += 3;
+    if (h264Type >= 1 && h264Type <= 23) h264Score += 1;
+
+    if (firstByte === 0x40 || firstByte === 0x42 || firstByte === 0x44 || firstByte === 0x26 || firstByte === 0x27 || firstByte === 0x28) hevcScore += 3;
+    if (hevcType === 32 || hevcType === 33 || hevcType === 34 || hevcType === 19 || hevcType === 20 || hevcType === 39 || hevcType === 40) hevcScore += 1;
+  }
+
+  if (h264Score > hevcScore + 1) return "h264";
+  if (hevcScore > h264Score + 1) return "hevc";
+  return null;
+}
+
+function ensureVideoTranscoder(key, ch, frameData) {
+  if (ch.ffmpeg || ch.ffmpegStarting) return;
+  if (!ch.subs || ch.subs.size === 0) return;
+
+  const configuredCodec = normalizeVideoCodec(process.env.VIDEO_CODEC);
+  const codec = configuredCodec ?? ch.codecHint ?? guessVideoCodec(frameData) ?? "hevc";
+  ch.codecHint = codec;
+  ch.ffmpegStarting = true;
+
+  console.log(`[FFmpeg] Starting transcoder for channel ${key}`, { codec });
+
+  ch.ffmpeg = spawn("ffmpeg", [
+    "-hide_banner",
+    "-loglevel", "warning",
+    "-f", ffmpegInputFormatForCodec(codec),
+    "-i", "pipe:0",
+    "-c:v", "libx264",
+    "-preset", "ultrafast",
+    "-tune", "zerolatency",
+    "-f", "flv",
+    "pipe:1"
+  ]);
+
+  ch.ffmpeg.stdout.on("data", (data) => {
+    for (const s of ch.subs) {
+      if (s.ws.readyState === WebSocket.OPEN) {
+        try { s.ws.send(data, { binary: true }); } catch {}
+      }
+    }
+  });
+
+  ch.ffmpeg.stderr.on("data", (data) => {
+    console.error(`[FFmpeg] ${key} (${codec}) error:`, data.toString().trim());
+  });
+
+  ch.ffmpeg.on("close", (code) => {
+    console.log(`[FFmpeg] ${key} transcoder exited with code ${code}`, { codec });
+    if (state.videoChannels.get(key)?.ffmpeg === ch.ffmpeg) {
+      state.videoChannels.get(key).ffmpeg = null;
+    }
+    ch.ffmpegStarting = false;
+
+    const configured = normalizeVideoCodec(process.env.VIDEO_CODEC);
+    if (code !== 0 && !configured && ch.subs.size > 0) {
+      const nextCodec = alternateVideoCodec(codec);
+      if (ch.codecHint !== nextCodec) {
+        ch.codecHint = nextCodec;
+        console.log(`[FFmpeg] ${key} will retry with alternate codec`, { codec: nextCodec });
+      }
+    }
+  });
+}
+
 function localIpGuess() {
   if (process.env.PUBLIC_IP) return process.env.PUBLIC_IP;
   const ifs = os.networkInterfaces();
@@ -163,44 +262,6 @@ wssVideo.on("connection", (ws, req) => {
   const sub = { ws };
   ch.subs.add(sub);
   console.log(`[WS/video] subscriber connected { deviceId: '${deviceId}', channel: ${channel}, raw: '${rawDevice}' }`);
-
-  // Start FFmpeg if not already running for this channel
-  if (!ch.ffmpeg) {
-    console.log(`[FFmpeg] Starting transcoder for channel ${key}`);
-    
-    // Read raw H.265 NALUs from stdin, output raw H.264 NALUs to stdout
-    ch.ffmpeg = spawn("ffmpeg", [
-      "-hide_banner",
-      "-loglevel", "warning",
-      "-f", "hevc",                 // Tell ffmpeg the input is raw HEVC
-      "-i", "pipe:0",               // Input from stdin
-      "-c:v", "libx264",            // Transcode to H.264
-      "-preset", "ultrafast",       // Lowest latency
-      "-tune", "zerolatency",       // Optimize for streaming
-      "-f", "h264",                 // Output format: raw H.264 bitstream
-      "pipe:1"                      // Output to stdout
-    ]);
-
-    // Handle FFmpeg output (broadcast transcoded chunks to WebSockets)
-    ch.ffmpeg.stdout.on("data", (data) => {
-      for (const s of ch.subs) {
-        if (s.ws.readyState === WebSocket.OPEN) {
-          try { s.ws.send(data, { binary: true }); } catch (e) {}
-        }
-      }
-    });
-
-    ch.ffmpeg.stderr.on("data", (data) => {
-      console.error(`[FFmpeg] ${key} error:`, data.toString().trim());
-    });
-
-    ch.ffmpeg.on("close", (code) => {
-      console.log(`[FFmpeg] ${key} transcoder exited with code ${code}`);
-      if (state.videoChannels.get(key)?.ffmpeg === ch.ffmpeg) {
-        state.videoChannels.get(key).ffmpeg = null;
-      }
-    });
-  }
 
   const removeSub = () => {
     ch.subs.delete(sub);
@@ -325,11 +386,11 @@ function handleJT1078Packet(packet) {
   const key = `${cid}:${frame.channel}`;
   let ch = state.videoChannels.get(key);
   if (!ch) {
-    ch = { subs: new Set(), lastSps: null, lastPps: null };
+    ch = { subs: new Set(), lastSps: null, lastPps: null, ffmpeg: null, ffmpegStarting: false, codecHint: null };
     state.videoChannels.set(key, ch);
   }
 
-
+  ensureVideoTranscoder(key, ch, frame.data);
 
   // Feed raw video data into FFmpeg transcoder
   if (ch.ffmpeg && ch.ffmpeg.stdin && ch.ffmpeg.stdin.writable) {
