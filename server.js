@@ -695,11 +695,11 @@ startJT808Server({
         console.log("[JT808] REGISTER_ON_AUTH: inferring registration from auth", { deviceId });
       }
 
-      // Send a keepalive timer command so the device stays online without button press.
-      // Default: timer,30,300# = wait 30s then stay online for 300s (5 min).
-      // Set KEEPALIVE_ON_AUTH=0 to disable. Customise with KEEPALIVE_COMMAND env var.
-      const keepaliveEnabled = process.env.KEEPALIVE_ON_AUTH !== "0";
-      if (keepaliveEnabled) {
+      // Auto keepalive is OPT-IN only. Set KEEPALIVE_ON_AUTH=1 to enable.
+      // The timer,<delay>,<duration># command tells the device to go offline for <delay>s
+      // then come back for <duration>s — do NOT fire automatically as it breaks the
+      // video stream on the same session. Use POST /api/devices/:id/wakeup manually instead.
+      if (process.env.KEEPALIVE_ON_AUTH === "1") {
         const keepaliveCmd = process.env.KEEPALIVE_COMMAND ?? "timer,30,300#";
         setTimeout(() => {
           if (!sess.socket || sess.socket.destroyed) return;
