@@ -1,5 +1,6 @@
 import { escapeJT808, xorChecksum, parseBcdTimeYYMMDDhhmmss } from "./codec.js";
 
+
 function toFrame(unescapedWithoutDelimiters) {
   const esc = escapeJT808(unescapedWithoutDelimiters);
   return Buffer.concat([Buffer.from([0x7e]), esc, Buffer.from([0x7e])]);
@@ -144,6 +145,59 @@ export function encodeRealtimeAvCtrl9102({ deviceIdRaw, msgSeq, channel, cmd = 0
   return toFrame(Buffer.concat([withoutChk, chk]));
 }
 
+/**
+ * Encode JT/T 808 0x8900 Pass-Through (transparent) message.
+ * @param {object} opts
+ * @param {Buffer}  opts.deviceIdRaw  - raw device ID buffer
+ * @param {number}  opts.msgSeq       - message sequence number
+ * @param {number}  opts.msgType      - transparent message type (e.g. 0xF0 for online command)
+ * @param {Buffer|string} opts.content - transparent message content
+ */
+export function encode8900PassThrough({ deviceIdRaw, msgSeq, msgType = 0xF0, content }) {
+  const contentBuf = Buffer.isBuffer(content) ? content : Buffer.from(String(content), "ascii");
+  const body = Buffer.alloc(1 + contentBuf.length);
+  body.writeUInt8(msgType & 0xff, 0);
+  contentBuf.copy(body, 1);
+
+  const header = buildHeader({ msgId: 0x8900, bodyLen: body.length, deviceIdRaw, msgSeq });
+  const withoutChk = Buffer.concat([header, body]);
+  const chk = Buffer.from([xorChecksum(withoutChk)]);
+  return toFrame(Buffer.concat([withoutChk, chk]));
+}
+
+/**
+ * Encode JT/T 808 0x8103 Terminal Parameter Setup.
+ * @param {object} opts
+ * @param {Buffer}  opts.deviceIdRaw  - raw device ID buffer
+ * @param {number}  opts.msgSeq       - message sequence number
+ * @param {Array<{id:number, value:number|string}>} opts.params - parameter items
+ *   Each param: { id (DWORD), value (DWORD number) }
+ */
+export function encode8103ParamSetup({ deviceIdRaw, msgSeq, params }) {
+  // Each param item: 4-byte ID + 1-byte length + N-byte value
+  // For DWORD params: length=4, value is 4-byte big-endian uint
+  const items = [];
+  for (const p of params) {
+    const valBuf = Buffer.alloc(4);
+    valBuf.writeUInt32BE(p.value >>> 0, 0);
+    const item = Buffer.alloc(4 + 1 + 4);
+    item.writeUInt32BE(p.id >>> 0, 0);
+    item.writeUInt8(4, 4);
+    valBuf.copy(item, 5);
+    items.push(item);
+  }
+
+  const paramsBuf = Buffer.concat(items);
+  const body = Buffer.alloc(1 + paramsBuf.length);
+  body.writeUInt8(params.length & 0xff, 0);
+  paramsBuf.copy(body, 1);
+
+  const header = buildHeader({ msgId: 0x8103, bodyLen: body.length, deviceIdRaw, msgSeq });
+  const withoutChk = Buffer.concat([header, body]);
+  const chk = Buffer.from([xorChecksum(withoutChk)]);
+  return toFrame(Buffer.concat([withoutChk, chk]));
+}
+
 function decodeResultCode(code) {
   switch (code) {
     case 0: return "success";
@@ -261,18 +315,27 @@ export function handleJT808Message(pkt, { onLocation, onLog, onGeneralResponse, 
 function parse0200Body(body) {
   const alarm  = body.readUInt32BE(0);
   const status = body.readUInt32BE(4);
-  const latRaw = body.readInt32BE(8);
-  const lngRaw = body.readInt32BE(12);
+
+  // Lat/Lng are DWORD (unsigned) in the spec, scaled by 1e6.
+  // Status bit 1 = GPS fix acquired; bit 2 = North (1) / South (0); bit 3 = East (1) / West (0)
+  const latRaw = body.readUInt32BE(8);
+  const lngRaw = body.readUInt32BE(12);
   const alt    = body.readUInt16BE(16);
   const speed  = body.readUInt16BE(18);
   const heading = body.readUInt16BE(20);
   const timeBcd = body.subarray(22, 28);
 
-  const lat = latRaw / 1e6;
-  const lng = lngRaw / 1e6;
-
-  const accOn = (status & 0x00000001) !== 0;
+  const accOn  = (status & 0x00000001) !== 0;
   const gpsFix = (status & 0x00000002) !== 0;
+  // bit2: 1=North, 0=South; bit3: 1=East (positive), 0=West (negative)
+  const isNorth = (status & 0x00000004) !== 0;
+  const isEast  = (status & 0x00000008) !== 0;
+
+  // Apply hemisphere sign. If no fix, coordinates may be 0.
+  let lat = latRaw / 1e6;
+  let lng = lngRaw / 1e6;
+  if (!isNorth) lat = -lat;
+  if (!isEast)  lng = -lng;
 
   return {
     alarm,
@@ -284,6 +347,8 @@ function parse0200Body(body) {
     heading,
     ts: parseBcdTimeYYMMDDhhmmss(timeBcd),
     accOn,
-    gpsFix
+    gpsFix,
+    isNorth,
+    isEast
   };
 }

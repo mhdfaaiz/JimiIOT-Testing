@@ -9,7 +9,8 @@ import { fileURLToPath } from "url";
 import { startJT808Server } from "./jt808/jt808-server.js";
 import { startJT1078Udp }   from "./jt1078/jt1078-udp.js";
 import { startJT1078Tcp }   from "./jt1078/jt1078-tcp.js";
-import { encodeRealtimeAv9101, encodeRealtimeAvCtrl9102 } from "./jt808/handlers.js";
+import { encodeRealtimeAv9101, encodeRealtimeAvCtrl9102, encode8900PassThrough, encode8103ParamSetup } from "./jt808/handlers.js";
+
 import { JT1078Reassembler } from "./jt1078/reassembler.js";
 // flv-muxer removed
 
@@ -320,6 +321,64 @@ app.get("/api/video/streams", (_req, res) => {
     }
   }
   res.json(list);
+});
+
+// ── Device management APIs ────────────────────────────────────────────────────
+
+/**
+ * POST /api/devices/:deviceId/wakeup
+ * Sends an 0x8900/0xF0 online command to keep the device awake and online.
+ * The JC371 recognises `timer,<delay_s>,<online_duration_s>#` which instructs it
+ * to stay connected for <online_duration_s> seconds before going back to sleep.
+ * Body (optional): { command: "timer,30,300#" }
+ */
+app.post("/api/devices/:deviceId/wakeup", (req, res) => {
+  const { deviceId } = req.params;
+  const sess = resolveSession(deviceId);
+  if (!sess?.socket || sess.socket.destroyed) {
+    return res.status(404).json({ ok: false, error: `No active JT808 session for device ${deviceId}` });
+  }
+  const command = String(req.body?.command ?? "timer,30,300#");
+  try {
+    const msgSeq = sess.nextSeq++;
+    const pkt = encode8900PassThrough({ deviceIdRaw: sess.deviceIdRaw, msgSeq, msgType: 0xF0, content: command });
+    sess.socket.write(pkt);
+    console.log("[JT808] sent 0x8900/0xF0 wakeup", { deviceId, command, msgSeq });
+    res.json({ ok: true, deviceId, command, msgSeq });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message ?? String(e) });
+  }
+});
+
+/**
+ * POST /api/devices/:deviceId/params
+ * Sends 0x8103 to configure device parameters.
+ * Body: { params: [ { id: 0x0029, value: 10 }, ... ] }
+ * Common param IDs:
+ *   0x0001 = heartbeat interval (seconds)
+ *   0x0027 = reporting interval in sleep mode (seconds)
+ *   0x0029 = default reporting interval (seconds)
+ *   0x002C = default reporting distance (meters)
+ */
+app.post("/api/devices/:deviceId/params", (req, res) => {
+  const { deviceId } = req.params;
+  const sess = resolveSession(deviceId);
+  if (!sess?.socket || sess.socket.destroyed) {
+    return res.status(404).json({ ok: false, error: `No active JT808 session for device ${deviceId}` });
+  }
+  const params = req.body?.params;
+  if (!Array.isArray(params) || params.length === 0) {
+    return res.status(400).json({ ok: false, error: "Body must include non-empty params array: [{ id, value }, ...]" });
+  }
+  try {
+    const msgSeq = sess.nextSeq++;
+    const pkt = encode8103ParamSetup({ deviceIdRaw: sess.deviceIdRaw, msgSeq, params });
+    sess.socket.write(pkt);
+    console.log("[JT808] sent 0x8103 param setup", { deviceId, params, msgSeq });
+    res.json({ ok: true, deviceId, params, msgSeq });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message ?? String(e) });
+  }
 });
 
 app.post("/api/video/:deviceId/start", async (req, res) => {
@@ -634,6 +693,21 @@ startJT808Server({
       if (process.env.REGISTER_ON_AUTH === "1") {
         sess.registered = true;
         console.log("[JT808] REGISTER_ON_AUTH: inferring registration from auth", { deviceId });
+      }
+
+      // Send a keepalive timer command so the device stays online without button press.
+      // Default: timer,30,300# = wait 30s then stay online for 300s (5 min).
+      // Set KEEPALIVE_ON_AUTH=0 to disable. Customise with KEEPALIVE_COMMAND env var.
+      const keepaliveEnabled = process.env.KEEPALIVE_ON_AUTH !== "0";
+      if (keepaliveEnabled) {
+        const keepaliveCmd = process.env.KEEPALIVE_COMMAND ?? "timer,30,300#";
+        setTimeout(() => {
+          if (!sess.socket || sess.socket.destroyed) return;
+          const msgSeq = sess.nextSeq++;
+          const pkt = encode8900PassThrough({ deviceIdRaw: sess.deviceIdRaw, msgSeq, msgType: 0xF0, content: keepaliveCmd });
+          sess.socket.write(pkt);
+          console.log("[JT808] auto-sent keepalive timer command", { deviceId, command: keepaliveCmd, msgSeq });
+        }, 300);
       }
 
       if (process.env.AUTO_START_VIDEO === "1") {
