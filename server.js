@@ -110,9 +110,10 @@ function ensureVideoTranscoder(key, ch, frameData) {
   if (!ch.subs || ch.subs.size === 0) return;
 
   const configuredCodec = normalizeVideoCodec(process.env.VIDEO_CODEC);
-  const codec = configuredCodec ?? ch.codecHint ?? guessVideoCodec(frameData) ?? "hevc";
+  const codec = configuredCodec ?? ch.codecHint ?? guessVideoCodec(frameData) ?? "h264";
   ch.codecHint = codec;
   ch.ffmpegStarting = true;
+  ch.ffmpegHasOutput = false;
 
   console.log(`[FFmpeg] Starting transcoder for channel ${key}`, { codec });
 
@@ -129,6 +130,7 @@ function ensureVideoTranscoder(key, ch, frameData) {
   ]);
 
   ch.ffmpeg.stdout.on("data", (data) => {
+    ch.ffmpegHasOutput = true;
     for (const s of ch.subs) {
       if (s.ws.readyState === WebSocket.OPEN) {
         try { s.ws.send(data, { binary: true }); } catch {}
@@ -136,12 +138,27 @@ function ensureVideoTranscoder(key, ch, frameData) {
     }
   });
 
+  // If ffmpeg never emits any FLV bytes, it likely started with the wrong codec.
+  if (!configuredCodec) {
+    ch.ffmpegProbeTimer = setTimeout(() => {
+      if (!ch.ffmpeg || ch.ffmpegHasOutput) return;
+      const nextCodec = alternateVideoCodec(codec);
+      ch.codecHint = nextCodec;
+      console.log(`[FFmpeg] ${key} produced no output, retrying with alternate codec`, { codec: nextCodec });
+      try { ch.ffmpeg.kill("SIGKILL"); } catch {}
+    }, 3000);
+  }
+
   ch.ffmpeg.stderr.on("data", (data) => {
     console.error(`[FFmpeg] ${key} (${codec}) error:`, data.toString().trim());
   });
 
   ch.ffmpeg.on("close", (code) => {
     console.log(`[FFmpeg] ${key} transcoder exited with code ${code}`, { codec });
+    if (ch.ffmpegProbeTimer) {
+      clearTimeout(ch.ffmpegProbeTimer);
+      ch.ffmpegProbeTimer = null;
+    }
     if (state.videoChannels.get(key)?.ffmpeg === ch.ffmpeg) {
       state.videoChannels.get(key).ffmpeg = null;
     }
@@ -255,7 +272,7 @@ wssVideo.on("connection", (ws, req) => {
   const key = `${deviceId}:${channel}`;
   let ch = state.videoChannels.get(key);
   if (!ch) {
-    ch = { subs: new Set(), ffmpeg: null };
+    ch = { subs: new Set(), ffmpeg: null, ffmpegStarting: false, codecHint: null, ffmpegProbeTimer: null, ffmpegHasOutput: false };
     state.videoChannels.set(key, ch);
   }
 
@@ -272,6 +289,10 @@ wssVideo.on("connection", (ws, req) => {
       console.log(`[FFmpeg] Stopping transcoder for channel ${key} (0 subscribers)`);
       ch.ffmpeg.kill("SIGKILL");
       ch.ffmpeg = null;
+    }
+    if (ch.subs.size === 0 && ch.ffmpegProbeTimer) {
+      clearTimeout(ch.ffmpegProbeTimer);
+      ch.ffmpegProbeTimer = null;
     }
   };
 
@@ -386,7 +407,16 @@ function handleJT1078Packet(packet) {
   const key = `${cid}:${frame.channel}`;
   let ch = state.videoChannels.get(key);
   if (!ch) {
-    ch = { subs: new Set(), lastSps: null, lastPps: null, ffmpeg: null, ffmpegStarting: false, codecHint: null };
+    ch = {
+      subs: new Set(),
+      lastSps: null,
+      lastPps: null,
+      ffmpeg: null,
+      ffmpegStarting: false,
+      codecHint: null,
+      ffmpegProbeTimer: null,
+      ffmpegHasOutput: false
+    };
     state.videoChannels.set(key, ch);
   }
 
