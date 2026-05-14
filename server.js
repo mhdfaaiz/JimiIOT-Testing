@@ -70,8 +70,30 @@ function alternateVideoCodec(codec) {
   return codec === "h264" ? "hevc" : "h264";
 }
 
+function nextInputCandidate(currentFormat) {
+  if (currentFormat === "h264") return { inputFormat: "hevc", codecHint: "hevc" };
+  if (currentFormat === "hevc") return { inputFormat: "mpeg", codecHint: null };
+  return { inputFormat: "h264", codecHint: "h264" };
+}
+
 function ffmpegInputFormatForCodec(codec) {
   return codec === "h264" ? "h264" : "hevc";
+}
+
+function looksLikeMpegPs(data) {
+  if (!Buffer.isBuffer(data) || data.length < 4) return false;
+  const sample = data.subarray(0, Math.min(data.length, 256));
+  for (let i = 0; i < sample.length - 4; i += 1) {
+    if (
+      sample[i] === 0x00 &&
+      sample[i + 1] === 0x00 &&
+      sample[i + 2] === 0x01 &&
+      (sample[i + 3] === 0xba || sample[i + 3] === 0xbb || sample[i + 3] === 0xbc)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function guessVideoCodec(data) {
@@ -110,17 +132,36 @@ function ensureVideoTranscoder(key, ch, frameData) {
   if (!ch.subs || ch.subs.size === 0) return;
 
   const configuredCodec = normalizeVideoCodec(process.env.VIDEO_CODEC);
-  const codec = configuredCodec ?? ch.codecHint ?? guessVideoCodec(frameData) ?? "h264";
-  ch.codecHint = codec;
+  const envInputFormat = String(process.env.VIDEO_INPUT_FORMAT ?? "").trim().toLowerCase();
+
+  if (!ch.inputFormatHint) {
+    if (envInputFormat === "h264" || envInputFormat === "hevc" || envInputFormat === "mpeg") {
+      ch.inputFormatHint = envInputFormat;
+      ch.codecHint = envInputFormat === "mpeg" ? null : envInputFormat;
+    } else if (configuredCodec) {
+      ch.codecHint = configuredCodec;
+      ch.inputFormatHint = ffmpegInputFormatForCodec(configuredCodec);
+    } else if (looksLikeMpegPs(frameData)) {
+      ch.inputFormatHint = "mpeg";
+      ch.codecHint = null;
+    } else {
+      const guessed = ch.codecHint ?? guessVideoCodec(frameData) ?? "h264";
+      ch.codecHint = guessed;
+      ch.inputFormatHint = ffmpegInputFormatForCodec(guessed);
+    }
+  }
+
+  const codec = ch.codecHint;
+  const inputFormat = ch.inputFormatHint ?? ffmpegInputFormatForCodec(codec ?? "h264");
   ch.ffmpegStarting = true;
   ch.ffmpegHasOutput = false;
 
-  console.log(`[FFmpeg] Starting transcoder for channel ${key}`, { codec });
+  console.log(`[FFmpeg] Starting transcoder for channel ${key}`, { codec, inputFormat });
 
   ch.ffmpeg = spawn("ffmpeg", [
     "-hide_banner",
     "-loglevel", "warning",
-    "-f", ffmpegInputFormatForCodec(codec),
+    "-f", inputFormat,
     "-i", "pipe:0",
     "-c:v", "libx264",
     "-preset", "ultrafast",
@@ -139,12 +180,13 @@ function ensureVideoTranscoder(key, ch, frameData) {
   });
 
   // If ffmpeg never emits any FLV bytes, it likely started with the wrong codec.
-  if (!configuredCodec) {
+  if (!configuredCodec && !envInputFormat) {
     ch.ffmpegProbeTimer = setTimeout(() => {
       if (!ch.ffmpeg || ch.ffmpegHasOutput) return;
-      const nextCodec = alternateVideoCodec(codec);
-      ch.codecHint = nextCodec;
-      console.log(`[FFmpeg] ${key} produced no output, retrying with alternate codec`, { codec: nextCodec });
+      const next = nextInputCandidate(inputFormat);
+      ch.codecHint = next.codecHint;
+      ch.inputFormatHint = next.inputFormat;
+      console.log(`[FFmpeg] ${key} produced no output, retrying with alternate input`, next);
       try { ch.ffmpeg.kill("SIGKILL"); } catch {}
     }, 3000);
   }
@@ -154,7 +196,7 @@ function ensureVideoTranscoder(key, ch, frameData) {
   });
 
   ch.ffmpeg.on("close", (code) => {
-    console.log(`[FFmpeg] ${key} transcoder exited with code ${code}`, { codec });
+    console.log(`[FFmpeg] ${key} transcoder exited with code ${code}`, { codec, inputFormat });
     if (ch.ffmpegProbeTimer) {
       clearTimeout(ch.ffmpegProbeTimer);
       ch.ffmpegProbeTimer = null;
@@ -165,12 +207,11 @@ function ensureVideoTranscoder(key, ch, frameData) {
     ch.ffmpegStarting = false;
 
     const configured = normalizeVideoCodec(process.env.VIDEO_CODEC);
-    if (code !== 0 && !configured && ch.subs.size > 0) {
-      const nextCodec = alternateVideoCodec(codec);
-      if (ch.codecHint !== nextCodec) {
-        ch.codecHint = nextCodec;
-        console.log(`[FFmpeg] ${key} will retry with alternate codec`, { codec: nextCodec });
-      }
+    if (code !== 0 && !configured && !envInputFormat && ch.subs.size > 0) {
+      const next = nextInputCandidate(inputFormat);
+      ch.codecHint = next.codecHint;
+      ch.inputFormatHint = next.inputFormat;
+      console.log(`[FFmpeg] ${key} will retry with alternate input`, next);
     }
   });
 }
@@ -272,7 +313,15 @@ wssVideo.on("connection", (ws, req) => {
   const key = `${deviceId}:${channel}`;
   let ch = state.videoChannels.get(key);
   if (!ch) {
-    ch = { subs: new Set(), ffmpeg: null, ffmpegStarting: false, codecHint: null, ffmpegProbeTimer: null, ffmpegHasOutput: false };
+    ch = {
+      subs: new Set(),
+      ffmpeg: null,
+      ffmpegStarting: false,
+      codecHint: null,
+      inputFormatHint: null,
+      ffmpegProbeTimer: null,
+      ffmpegHasOutput: false
+    };
     state.videoChannels.set(key, ch);
   }
 
@@ -414,6 +463,7 @@ function handleJT1078Packet(packet) {
       ffmpeg: null,
       ffmpegStarting: false,
       codecHint: null,
+      inputFormatHint: null,
       ffmpegProbeTimer: null,
       ffmpegHasOutput: false
     };
