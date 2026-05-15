@@ -138,6 +138,7 @@ function initAudioPlayer(deviceId, channel) {
 
   let audioCtx = null;
   let nextPlayTime = 0;
+  let resetSchedule = true;
 
   const audioWs = new WebSocket(url);
   audioWs.binaryType = "arraybuffer";
@@ -186,14 +187,25 @@ function initAudioPlayer(deviceId, channel) {
     src.connect(audioCtx.destination);
 
     const now = audioCtx.currentTime;
-    // If we've fallen behind (e.g. tab was hidden), reset scheduling ahead of now
-    if (nextPlayTime < now + 0.08) nextPlayTime = now + 0.08;
+    // Reset scheduling edge when unmuting/reconnecting so old buffered timeline is dropped.
+    if (resetSchedule) {
+      nextPlayTime = now + 0.03;
+      resetSchedule = false;
+    }
+    // Hard-clamp queue depth to keep audio near real-time.
+    if (nextPlayTime - now > 0.35) nextPlayTime = now + 0.03;
+    if (nextPlayTime < now + 0.02) nextPlayTime = now + 0.02;
     src.start(nextPlayTime);
     nextPlayTime += buf.duration;
   };
 
   audioPlayers[key] = { audioCtx, ws: audioWs, muted: true, nextPlayTime: 0 };
   _setAudioStatus(channel, "connecting…");
+
+  // Expose a tiny control surface used by mute toggle.
+  audioPlayers[key].markScheduleReset = () => {
+    resetSchedule = true;
+  };
 }
 
 function toggleAudioMute(deviceId, channel) {
@@ -209,8 +221,10 @@ function toggleAudioMute(deviceId, channel) {
     _setAudioStatus(channel, "playing");
     // Resume context if suspended (browsers suspend on inactivity)
     if (player.audioCtx?.state === "suspended") player.audioCtx.resume().catch(() => {});
+    player.markScheduleReset?.();
   } else {
     _setAudioStatus(channel, "muted");
+    player.markScheduleReset?.();
   }
 }
 
@@ -315,10 +329,16 @@ document.getElementById("startVideoBtn")?.addEventListener("click", () => {
 
   document.getElementById("videoStatus").textContent = "Sending 0x9101…";
 
-  fetch(`/api/video/${encodeURIComponent(deviceId)}/start`, {
+  // Clear any prior stream mode (e.g., stale audio-only session) before starting.
+  fetch(`/api/video/${encodeURIComponent(deviceId)}/stop`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ channels: [1, 2] })
+  }).catch(() => null).finally(() => fetch(`/api/video/${encodeURIComponent(deviceId)}/start`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ channels: [1, 2], dataType: 0, streamType: 0 })
+    // Keep video start on the known-good profile for this device.
+    body:    JSON.stringify({ channels: [1, 2], dataType: 1, streamType: 0 })
   })
     .then((r) => r.json())
     .then((d) => {
@@ -335,7 +355,7 @@ document.getElementById("startVideoBtn")?.addEventListener("click", () => {
     .catch((err) => {
       console.error("[video] start error", err);
       document.getElementById("videoStatus").textContent = "❌ API error — see console";
-    });
+    }));
 });
 
 /* ─── Audio button wiring ────────────────────────────────────────────────── */
