@@ -35,18 +35,18 @@
       h2 { margin: 0 0 12px; font-size: 1.15rem; color: #333; font-weight: 600; }
       h3 { margin: 14px 0 8px; font-size: 0.95rem; color: #555; font-weight: 600; }
       #content {
-        padding: 24px;
-        max-width: 1600px;
+        padding: 16px;
+        max-width: 1360px;
         margin: 0 auto;
       }
-      .row { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }
+      .row { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
       .card {
         background: rgba(255, 255, 255, 0.97);
         border: none;
         border-radius: 16px; 
-        padding: 24px; 
+        padding: 18px; 
         flex: 1; 
-        min-width: 350px;
+        min-width: 300px;
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
         backdrop-filter: blur(8px);
         transition: transform 0.3s ease, box-shadow 0.3s ease;
@@ -164,11 +164,16 @@
       
       #mapContainer {
         width: 100%;
-        height: 400px;
+        height: 340px;
         border-radius: 12px;
         overflow: hidden;
         margin-bottom: 16px;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      }
+
+      @media (max-width: 1280px) {
+        #content { max-width: 1200px; }
+        .card { min-width: 280px; }
       }
       
       .video-controls {
@@ -271,11 +276,11 @@
         <div class="two-col" style="margin-bottom:16px;">
           <div>
             <h3>Channel 1 Stream</h3>
-            <video id="videoEl1" controls muted playsinline></video>
+            <video id="videoEl1" controls playsinline></video>
           </div>
           <div>
             <h3>Channel 2 Stream</h3>
-            <video id="videoEl2" controls muted playsinline></video>
+            <video id="videoEl2" controls playsinline></video>
           </div>
         </div>
 

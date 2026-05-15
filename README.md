@@ -7,6 +7,7 @@ It supports:
 - JT/T 1078 over UDP/TCP for live video packets
 - Real-time web dashboard via WebSocket
 - Live video playback in browser using FLV over WebSocket
+- Audio+video request mode (0x9101 dataType=0) for microphone voice
 
 This guide is written for freshers and explains everything from scratch.
 
@@ -237,10 +238,14 @@ Example start request body:
 ```json
 {
   "channels": [1, 2],
-  "dataType": 1,
+  "dataType": 0,
   "streamType": 0
 }
 ```
+
+Note:
+- `dataType: 0` requests audio+video from terminal.
+- `dataType: 1` requests video-only.
 
 ---
 
@@ -286,6 +291,12 @@ ffmpeg -version
 - Check mobile network quality.
 - Keep TCP preferred if UDP unstable.
 - Keep pre-roll defaults unless memory pressure exists.
+
+## E) Video works but no voice
+- Ensure Start Video request uses `dataType: 0`.
+- Confirm browser tab and player are not muted.
+- Confirm device microphone/audio is enabled in terminal settings.
+- Server outputs FLV with AAC audio for browser compatibility.
 
 ---
 

@@ -17,6 +17,7 @@ We need one server that can do all of these at the same time:
 - Reassemble fragmented media payloads
 - Decode/transcode via FFmpeg
 - Push playable FLV stream to browser
+- Request audio+video mode (`dataType=0`) to include microphone voice
 
 ---
 
@@ -35,6 +36,7 @@ Used code:
 
 ## Step B: User triggers video start
 - Browser calls POST /api/video/:deviceId/start.
+- Default body uses `dataType: 0` (audio+video).
 - Server sends JT808 0x9101 variants (udp/tcp combinations).
 - Device responds with general response for 0x9101.
 - Server detects accepted variant and waits for media packets.
@@ -266,7 +268,7 @@ JT1078_PREFER_TCP=1
 6. JT1078 packets arrive.
 7. Reassembler logs FRAME COMPLETE.
 8. FFmpeg starts channel transcoder.
-9. Browser shows video.
+9. Browser shows video with live audio when device audio is enabled.
 
 ---
 
@@ -289,6 +291,12 @@ Problem: Device sends auth but start command fails
 Problem: Stream appears and disappears
 - Network instability.
 - Prefer TCP and verify mobile uplink quality.
+
+Problem: Video works but no sound
+- Ensure start request uses `dataType=0`.
+- Ensure browser/player is not muted.
+- Confirm device microphone/audio is enabled.
+- Check FFmpeg logs for unsupported audio codec warnings.
 
 ---
 

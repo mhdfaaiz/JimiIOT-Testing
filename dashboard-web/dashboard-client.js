@@ -23,6 +23,7 @@ const gpsLog   = document.getElementById("gpsLog");
 const videoLog = document.getElementById("videoLog");
 
 function prependLine(pre, line) {
+  if (!pre) return;
   const lines = pre.textContent === "—" ? [] : pre.textContent.split("\n");
   lines.unshift(line);
   pre.textContent = lines.slice(0, 20).join("\n");
@@ -144,7 +145,16 @@ function initVideoPlayer(deviceId, channel) {
 
   const player = flvjs.createPlayer(
     { type: "flv", isLive: true, url },
-    { enableWorker: false, lazyLoad: false }
+    {
+      enableWorker: false,
+      lazyLoad: false,
+      enableStashBuffer: false,
+      stashInitialSize: 32,
+      autoCleanupSourceBuffer: true,
+      autoCleanupMaxBackwardDuration: 1,
+      autoCleanupMinBackwardDuration: 0.25,
+      fixAudioTimestampGap: false
+    }
   );
   player.attachMediaElement(el);
   player.load();
@@ -155,6 +165,18 @@ function initVideoPlayer(deviceId, channel) {
   });
 
   player.play().catch(() => {});
+
+  // Keep playback near the live edge to reduce visible delay.
+  const lowLatencyTick = setInterval(() => {
+    if (!el || !el.buffered || el.buffered.length === 0) return;
+    const end = el.buffered.end(el.buffered.length - 1);
+    const lag = end - el.currentTime;
+    if (lag > 0.8) {
+      try { el.currentTime = Math.max(0, end - 0.08); } catch {}
+    }
+  }, 250);
+
+  player.on(flvjs.Events.DESTROYING, () => clearInterval(lowLatencyTick));
   videoPlayers[key] = player;
 
   console.log("[video] player started", { deviceId, channel, url });
@@ -187,7 +209,7 @@ document.getElementById("startVideoBtn")?.addEventListener("click", () => {
   fetch(`/api/video/${encodeURIComponent(deviceId)}/start`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ channels: [1, 2], dataType: 1, streamType: 0 })
+    body:    JSON.stringify({ channels: [1, 2], dataType: 0, streamType: 0 })
   })
     .then((r) => r.json())
     .then((d) => {
