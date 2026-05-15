@@ -70,7 +70,11 @@ function alternateVideoCodec(codec) {
   return codec === "h264" ? "hevc" : "h264";
 }
 
-function nextInputCandidate(currentFormat) {
+function nextInputCandidate(currentFormat, ch) {
+  if (ch?.lastFrameHasAnnexB) {
+    if (currentFormat === "h264") return { inputFormat: "hevc", codecHint: "hevc" };
+    return { inputFormat: "h264", codecHint: "h264" };
+  }
   if (currentFormat === "h264") return { inputFormat: "hevc", codecHint: "hevc" };
   if (currentFormat === "hevc") return { inputFormat: "mpeg", codecHint: null };
   return { inputFormat: "h264", codecHint: "h264" };
@@ -78,6 +82,37 @@ function nextInputCandidate(currentFormat) {
 
 function ffmpegInputFormatForCodec(codec) {
   return codec === "h264" ? "h264" : "hevc";
+}
+
+const PRE_ROLL_MAX_FRAMES = Math.max(10, Number(process.env.VIDEO_PREROLL_FRAMES ?? 40) || 40);
+const PRE_ROLL_MAX_BYTES = Math.max(256 * 1024, Number(process.env.VIDEO_PREROLL_BYTES ?? (2 * 1024 * 1024)) || (2 * 1024 * 1024));
+
+function createVideoChannelState() {
+  return {
+    subs: new Set(),
+    ffmpeg: null,
+    ffmpegStarting: false,
+    codecHint: null,
+    inputFormatHint: null,
+    codecLocked: false,
+    lockedCodecHint: null,
+    lockedInputFormatHint: null,
+    ffmpegProbeTimer: null,
+    ffmpegHasOutput: false,
+    ffmpegKilledForRetry: false,
+    ffmpegKilledForRestart: false,
+    waitingForBootstrapSince: 0,
+    lastFrameLooksMpeg: false,
+    lastFrameHasAnnexB: false,
+    decoderErrorPendingRestart: false,
+    lastDecoderErrorAt: 0,
+    preRollFrames: [],
+    preRollBytes: 0,
+    preRollNeedsFlush: false,
+    lastVps: null,
+    lastSps: null,
+    lastPps: null
+  };
 }
 
 function looksLikeMpegPs(data) {
@@ -127,6 +162,272 @@ function guessVideoCodec(data) {
   return null;
 }
 
+function hasAnnexBStartCode(data) {
+  if (!Buffer.isBuffer(data) || data.length < 4) return false;
+  for (let i = 0; i < data.length - 3; i += 1) {
+    if (data[i] === 0x00 && data[i + 1] === 0x00 && data[i + 2] === 0x01) return true;
+    if (data[i] === 0x00 && data[i + 1] === 0x00 && data[i + 2] === 0x00 && data[i + 3] === 0x01) return true;
+  }
+  return false;
+}
+
+function convertLengthPrefixedToAnnexB(data) {
+  if (!Buffer.isBuffer(data) || data.length < 6) return null;
+  let off = 0;
+  const chunks = [];
+  while (off + 4 <= data.length) {
+    const naluLen = data.readUInt32BE(off);
+    off += 4;
+    if (naluLen <= 0 || off + naluLen > data.length) return null;
+    chunks.push(Buffer.from([0x00, 0x00, 0x00, 0x01]));
+    chunks.push(data.subarray(off, off + naluLen));
+    off += naluLen;
+  }
+  if (off !== data.length || chunks.length === 0) return null;
+  return Buffer.concat(chunks);
+}
+
+function extractAnnexBNalus(data) {
+  const nalus = [];
+  let i = 0;
+  while (i < data.length - 3) {
+    let startLen = 0;
+    if (data[i] === 0x00 && data[i + 1] === 0x00 && data[i + 2] === 0x01) startLen = 3;
+    else if (i < data.length - 4 && data[i] === 0x00 && data[i + 1] === 0x00 && data[i + 2] === 0x00 && data[i + 3] === 0x01) startLen = 4;
+    if (!startLen) {
+      i += 1;
+      continue;
+    }
+
+    const nalStart = i + startLen;
+    let j = nalStart;
+    while (j < data.length - 3) {
+      if (data[j] === 0x00 && data[j + 1] === 0x00 && data[j + 2] === 0x01) break;
+      if (j < data.length - 4 && data[j] === 0x00 && data[j + 1] === 0x00 && data[j + 2] === 0x00 && data[j + 3] === 0x01) break;
+      j += 1;
+    }
+
+    if (nalStart < j) nalus.push(data.subarray(nalStart, j));
+    i = j;
+  }
+  return nalus;
+}
+
+function normalizeFrameForCodec(ch, frameData, codec) {
+  if (!Buffer.isBuffer(frameData) || frameData.length < 2) return frameData;
+
+  let data = frameData;
+  if (!hasAnnexBStartCode(data)) {
+    const converted = convertLengthPrefixedToAnnexB(data);
+    if (converted) data = converted;
+  }
+  if (!hasAnnexBStartCode(data)) return data;
+
+  const nalus = extractAnnexBNalus(data);
+  if (nalus.length === 0) return data;
+
+  if (codec === "h264") {
+    let hasSps = false;
+    let hasPps = false;
+    let hasIdr = false;
+    for (const nal of nalus) {
+      const t = nal[0] & 0x1f;
+      if (t === 7) {
+        hasSps = true;
+        ch.lastSps = Buffer.concat([Buffer.from([0x00, 0x00, 0x00, 0x01]), nal]);
+      } else if (t === 8) {
+        hasPps = true;
+        ch.lastPps = Buffer.concat([Buffer.from([0x00, 0x00, 0x00, 0x01]), nal]);
+      } else if (t === 5) {
+        hasIdr = true;
+      }
+    }
+    if (hasIdr && (!hasSps || !hasPps) && ch.lastSps && ch.lastPps) {
+      return Buffer.concat([ch.lastSps, ch.lastPps, data]);
+    }
+    return data;
+  }
+
+  if (codec === "hevc") {
+    let hasVps = false;
+    let hasSps = false;
+    let hasPps = false;
+    let hasIdr = false;
+    for (const nal of nalus) {
+      const t = (nal[0] >> 1) & 0x3f;
+      if (t === 32) {
+        hasVps = true;
+        ch.lastVps = Buffer.concat([Buffer.from([0x00, 0x00, 0x00, 0x01]), nal]);
+      } else if (t === 33) {
+        hasSps = true;
+        ch.lastSps = Buffer.concat([Buffer.from([0x00, 0x00, 0x00, 0x01]), nal]);
+      } else if (t === 34) {
+        hasPps = true;
+        ch.lastPps = Buffer.concat([Buffer.from([0x00, 0x00, 0x00, 0x01]), nal]);
+      } else if (t === 19 || t === 20) {
+        hasIdr = true;
+      }
+    }
+    if (hasIdr && (!hasVps || !hasSps || !hasPps) && ch.lastVps && ch.lastSps && ch.lastPps) {
+      return Buffer.concat([ch.lastVps, ch.lastSps, ch.lastPps, data]);
+    }
+    return data;
+  }
+
+  return data;
+}
+
+function inspectFrameNalState(data, codec) {
+  const out = {
+    hasAnnexB: false,
+    hasKeyframe: false,
+    hasSps: false,
+    hasPps: false,
+    hasVps: false
+  };
+  if (!Buffer.isBuffer(data) || data.length < 2) return out;
+
+  let buf = data;
+  if (!hasAnnexBStartCode(buf)) {
+    const converted = convertLengthPrefixedToAnnexB(buf);
+    if (converted) buf = converted;
+  }
+  if (!hasAnnexBStartCode(buf)) return out;
+
+  out.hasAnnexB = true;
+  const nalus = extractAnnexBNalus(buf);
+  for (const nal of nalus) {
+    if (!nal || nal.length < 1) continue;
+    if (codec === "h264") {
+      const t = nal[0] & 0x1f;
+      if (t === 7) out.hasSps = true;
+      else if (t === 8) out.hasPps = true;
+      else if (t === 5) out.hasKeyframe = true;
+    } else if (codec === "hevc") {
+      const t = (nal[0] >> 1) & 0x3f;
+      if (t === 32) out.hasVps = true;
+      else if (t === 33) out.hasSps = true;
+      else if (t === 34) out.hasPps = true;
+      else if (t === 19 || t === 20) out.hasKeyframe = true;
+    }
+  }
+  return out;
+}
+
+function isFrameBootstrapReady(ch, frameData, codec, payloadType) {
+  if (!codec) return true;
+
+  const state = inspectFrameNalState(frameData, codec);
+  const isIframe = payloadType === "video-I" || state.hasKeyframe;
+
+  if (codec === "h264") {
+    const hasParams = (state.hasSps && state.hasPps) || (!!ch.lastSps && !!ch.lastPps);
+    return isIframe && hasParams;
+  }
+  if (codec === "hevc") {
+    const hasParams = (state.hasVps && state.hasSps && state.hasPps) || (!!ch.lastVps && !!ch.lastSps && !!ch.lastPps);
+    return isIframe && hasParams;
+  }
+  return true;
+}
+
+function setInputHintIfMissing(ch, frameData) {
+  if (ch.codecLocked && ch.lockedInputFormatHint) {
+    ch.inputFormatHint = ch.lockedInputFormatHint;
+    ch.codecHint = ch.lockedCodecHint;
+    return;
+  }
+  if (ch.inputFormatHint) return;
+
+  const configuredCodec = normalizeVideoCodec(process.env.VIDEO_CODEC);
+  const envInputFormat = String(process.env.VIDEO_INPUT_FORMAT ?? "").trim().toLowerCase();
+
+  if (envInputFormat === "h264" || envInputFormat === "hevc" || envInputFormat === "mpeg") {
+    ch.inputFormatHint = envInputFormat;
+    ch.codecHint = envInputFormat === "mpeg" ? null : envInputFormat;
+    return;
+  }
+
+  if (configuredCodec) {
+    ch.codecHint = configuredCodec;
+    ch.inputFormatHint = ffmpegInputFormatForCodec(configuredCodec);
+    return;
+  }
+
+  if (looksLikeMpegPs(frameData)) {
+    ch.inputFormatHint = "mpeg";
+    ch.codecHint = null;
+    return;
+  }
+
+  const guessed = ch.codecHint ?? guessVideoCodec(frameData) ?? "h264";
+  ch.codecHint = guessed;
+  ch.inputFormatHint = ffmpegInputFormatForCodec(guessed);
+}
+
+function isLikelyDecoderError(text) {
+  const err = String(text ?? "").toLowerCase();
+  if (!err) return false;
+  return (
+    err.includes("non-existing pps") ||
+    err.includes("decode_slice_header") ||
+    err.includes("no frame") ||
+    err.includes("missing picture") ||
+    err.includes("error while decoding") ||
+    err.includes("invalid data found")
+  );
+}
+
+function pushPreRollFrame(ch, frameData, isKeyframe) {
+  if (!Buffer.isBuffer(frameData) || frameData.length === 0) return;
+
+  if (isKeyframe) {
+    ch.preRollFrames = [];
+    ch.preRollBytes = 0;
+  }
+
+  const copy = Buffer.from(frameData);
+  ch.preRollFrames.push(copy);
+  ch.preRollBytes += copy.length;
+
+  while (ch.preRollFrames.length > PRE_ROLL_MAX_FRAMES || ch.preRollBytes > PRE_ROLL_MAX_BYTES) {
+    const dropped = ch.preRollFrames.shift();
+    if (!dropped) break;
+    ch.preRollBytes -= dropped.length;
+  }
+  if (ch.preRollBytes < 0) ch.preRollBytes = 0;
+}
+
+function flushPreRollToTranscoder(key, ch) {
+  if (!ch.ffmpeg || !ch.ffmpeg.stdin || !ch.ffmpeg.stdin.writable) return false;
+  if (!ch.preRollNeedsFlush) return false;
+
+  let wrote = false;
+  for (const frame of ch.preRollFrames) {
+    try {
+      ch.ffmpeg.stdin.write(frame);
+      wrote = true;
+    } catch (e) {
+      console.error("[FFmpeg] Pre-roll write error:", e);
+      break;
+    }
+  }
+  ch.preRollNeedsFlush = false;
+  if (wrote) {
+    console.log(`[FFmpeg] ${key} pre-roll flushed`, { frames: ch.preRollFrames.length, bytes: ch.preRollBytes });
+  }
+  return wrote;
+}
+
+function killTranscoderForRestart(key, ch, reason) {
+  if (!ch.ffmpeg) return;
+  if (ch.ffmpegKilledForRestart) return;
+  ch.ffmpegKilledForRestart = true;
+  ch.ffmpegKilledForRetry = false;
+  console.log(`[FFmpeg] ${key} restarting on next keyframe`, { reason });
+  try { ch.ffmpeg.kill("SIGKILL"); } catch {}
+}
+
 function ensureVideoTranscoder(key, ch, frameData) {
   if (ch.ffmpeg || ch.ffmpegStarting) return;
   if (!ch.subs || ch.subs.size === 0) return;
@@ -134,27 +435,15 @@ function ensureVideoTranscoder(key, ch, frameData) {
   const configuredCodec = normalizeVideoCodec(process.env.VIDEO_CODEC);
   const envInputFormat = String(process.env.VIDEO_INPUT_FORMAT ?? "").trim().toLowerCase();
 
-  if (!ch.inputFormatHint) {
-    if (envInputFormat === "h264" || envInputFormat === "hevc" || envInputFormat === "mpeg") {
-      ch.inputFormatHint = envInputFormat;
-      ch.codecHint = envInputFormat === "mpeg" ? null : envInputFormat;
-    } else if (configuredCodec) {
-      ch.codecHint = configuredCodec;
-      ch.inputFormatHint = ffmpegInputFormatForCodec(configuredCodec);
-    } else if (looksLikeMpegPs(frameData)) {
-      ch.inputFormatHint = "mpeg";
-      ch.codecHint = null;
-    } else {
-      const guessed = ch.codecHint ?? guessVideoCodec(frameData) ?? "h264";
-      ch.codecHint = guessed;
-      ch.inputFormatHint = ffmpegInputFormatForCodec(guessed);
-    }
-  }
+  setInputHintIfMissing(ch, frameData);
 
   const codec = ch.codecHint;
   const inputFormat = ch.inputFormatHint ?? ffmpegInputFormatForCodec(codec ?? "h264");
   ch.ffmpegStarting = true;
   ch.ffmpegHasOutput = false;
+  ch.ffmpegKilledForRetry = false;
+  ch.ffmpegKilledForRestart = false;
+  ch.preRollNeedsFlush = true;
 
   console.log(`[FFmpeg] Starting transcoder for channel ${key}`, { codec, inputFormat });
 
@@ -169,9 +458,16 @@ function ensureVideoTranscoder(key, ch, frameData) {
     "-f", "flv",
     "pipe:1"
   ]);
+  const ff = ch.ffmpeg;
 
-  ch.ffmpeg.stdout.on("data", (data) => {
+  ff.stdout.on("data", (data) => {
     ch.ffmpegHasOutput = true;
+    if (!ch.codecLocked) {
+      ch.codecLocked = true;
+      ch.lockedCodecHint = codec;
+      ch.lockedInputFormatHint = inputFormat;
+      console.log(`[FFmpeg] ${key} codec/input locked`, { codec: ch.lockedCodecHint, inputFormat: ch.lockedInputFormatHint });
+    }
     for (const s of ch.subs) {
       if (s.ws.readyState === WebSocket.OPEN) {
         try { s.ws.send(data, { binary: true }); } catch {}
@@ -180,35 +476,46 @@ function ensureVideoTranscoder(key, ch, frameData) {
   });
 
   // If ffmpeg never emits any FLV bytes, it likely started with the wrong codec.
-  if (!configuredCodec && !envInputFormat) {
+  if (!configuredCodec && !envInputFormat && !ch.codecLocked) {
+    const probeMs = Math.max(3000, Number(process.env.VIDEO_PROBE_MS ?? 12000) || 12000);
     ch.ffmpegProbeTimer = setTimeout(() => {
-      if (!ch.ffmpeg || ch.ffmpegHasOutput) return;
-      const next = nextInputCandidate(inputFormat);
+      if (!ch.ffmpeg || ch.ffmpeg !== ff || ch.ffmpegHasOutput) return;
+      const next = nextInputCandidate(inputFormat, ch);
       ch.codecHint = next.codecHint;
       ch.inputFormatHint = next.inputFormat;
       console.log(`[FFmpeg] ${key} produced no output, retrying with alternate input`, next);
-      try { ch.ffmpeg.kill("SIGKILL"); } catch {}
-    }, 3000);
+      ch.ffmpegKilledForRetry = true;
+      try { ff.kill("SIGKILL"); } catch {}
+    }, probeMs);
   }
 
-  ch.ffmpeg.stderr.on("data", (data) => {
-    console.error(`[FFmpeg] ${key} (${codec}) error:`, data.toString().trim());
+  ff.stderr.on("data", (data) => {
+    const text = data.toString().trim();
+    console.error(`[FFmpeg] ${key} (${codec}) error:`, text);
+    if (isLikelyDecoderError(text)) {
+      ch.decoderErrorPendingRestart = true;
+      ch.lastDecoderErrorAt = Date.now();
+    }
   });
 
-  ch.ffmpeg.on("close", (code) => {
+  ff.on("close", (code) => {
     console.log(`[FFmpeg] ${key} transcoder exited with code ${code}`, { codec, inputFormat });
     if (ch.ffmpegProbeTimer) {
       clearTimeout(ch.ffmpegProbeTimer);
       ch.ffmpegProbeTimer = null;
     }
-    if (state.videoChannels.get(key)?.ffmpeg === ch.ffmpeg) {
+    if (state.videoChannels.get(key)?.ffmpeg === ff) {
       state.videoChannels.get(key).ffmpeg = null;
     }
     ch.ffmpegStarting = false;
+    const killedForRetry = !!ch.ffmpegKilledForRetry;
+    const killedForRestart = !!ch.ffmpegKilledForRestart;
+    ch.ffmpegKilledForRetry = false;
+    ch.ffmpegKilledForRestart = false;
 
     const configured = normalizeVideoCodec(process.env.VIDEO_CODEC);
-    if (code !== 0 && !configured && !envInputFormat && ch.subs.size > 0) {
-      const next = nextInputCandidate(inputFormat);
+    if (!killedForRetry && !killedForRestart && code !== 0 && !configured && !envInputFormat && ch.subs.size > 0 && !ch.codecLocked) {
+      const next = nextInputCandidate(inputFormat, ch);
       ch.codecHint = next.codecHint;
       ch.inputFormatHint = next.inputFormat;
       console.log(`[FFmpeg] ${key} will retry with alternate input`, next);
@@ -313,15 +620,7 @@ wssVideo.on("connection", (ws, req) => {
   const key = `${deviceId}:${channel}`;
   let ch = state.videoChannels.get(key);
   if (!ch) {
-    ch = {
-      subs: new Set(),
-      ffmpeg: null,
-      ffmpegStarting: false,
-      codecHint: null,
-      inputFormatHint: null,
-      ffmpegProbeTimer: null,
-      ffmpegHasOutput: false
-    };
+    ch = createVideoChannelState();
     state.videoChannels.set(key, ch);
   }
 
@@ -456,26 +755,51 @@ function handleJT1078Packet(packet) {
   const key = `${cid}:${frame.channel}`;
   let ch = state.videoChannels.get(key);
   if (!ch) {
-    ch = {
-      subs: new Set(),
-      lastSps: null,
-      lastPps: null,
-      ffmpeg: null,
-      ffmpegStarting: false,
-      codecHint: null,
-      inputFormatHint: null,
-      ffmpegProbeTimer: null,
-      ffmpegHasOutput: false
-    };
+    ch = createVideoChannelState();
     state.videoChannels.set(key, ch);
   }
 
-  ensureVideoTranscoder(key, ch, frame.data);
+  ch.lastFrameLooksMpeg = looksLikeMpegPs(frame.data);
+  ch.lastFrameHasAnnexB = hasAnnexBStartCode(frame.data);
+
+  setInputHintIfMissing(ch, frame.data);
+
+  const codecForNormalize = ch.inputFormatHint === "hevc" ? "hevc" : (ch.inputFormatHint === "h264" ? "h264" : null);
+  const normalizedFrame = codecForNormalize ? normalizeFrameForCodec(ch, frame.data, codecForNormalize) : frame.data;
+  const nalState = codecForNormalize ? inspectFrameNalState(normalizedFrame, codecForNormalize) : { hasKeyframe: false };
+  const isKeyframe = frame.payloadType === "video-I" || !!nalState.hasKeyframe;
+
+  pushPreRollFrame(ch, normalizedFrame, isKeyframe);
+
+  if (ch.decoderErrorPendingRestart && ch.ffmpeg && isKeyframe) {
+    ch.decoderErrorPendingRestart = false;
+    killTranscoderForRestart(key, ch, "decoder_error");
+    return;
+  }
+
+  if (!ch.ffmpeg && !ch.ffmpegStarting && codecForNormalize) {
+    const ready = isFrameBootstrapReady(ch, normalizedFrame, codecForNormalize, frame.payloadType);
+    if (!ready) {
+      const now = Date.now();
+      if (!ch.waitingForBootstrapSince || now - ch.waitingForBootstrapSince > 5000) {
+        ch.waitingForBootstrapSince = now;
+        console.log(`[FFmpeg] ${key} waiting for keyframe/parameter sets`, {
+          codec: codecForNormalize,
+          payloadType: frame.payloadType
+        });
+      }
+      return;
+    }
+    ch.waitingForBootstrapSince = 0;
+  }
+
+  ensureVideoTranscoder(key, ch, normalizedFrame);
 
   // Feed raw video data into FFmpeg transcoder
   if (ch.ffmpeg && ch.ffmpeg.stdin && ch.ffmpeg.stdin.writable) {
     try {
-      ch.ffmpeg.stdin.write(frame.data);
+      if (flushPreRollToTranscoder(key, ch)) return;
+      ch.ffmpeg.stdin.write(normalizedFrame);
     } catch (e) {
       console.error("[FFmpeg] Stdin write error:", e);
     }
