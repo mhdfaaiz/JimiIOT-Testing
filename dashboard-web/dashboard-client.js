@@ -72,7 +72,13 @@ function initMap() {
 }
 
 function updateMapMarker(lat, lng, speed, heading) {
-  if (!map) initMap();
+  if (!map) {
+    initMap();
+    // After initializing the map, ensure it renders properly by invalidating size
+    setTimeout(() => {
+      if (map) map.invalidateSize();
+    }, 100);
+  }
   
   if (deviceMarker) {
     map.removeLayer(deviceMarker);
@@ -165,10 +171,8 @@ function destroyVideoPlayer(deviceId, channel) {
 /* ─── Start Video button ────────────────────────────────────────────────── */
 let currentVideoDeviceId = null;
 
-document.addEventListener("DOMContentLoaded", () => {
-  // Initialize map on page load
-  initMap();
-});
+// Note: Map is initialized when first GPS data arrives, not on page load,
+// because the container is initially hidden (display:none).
 
 document.getElementById("startVideoBtn")?.addEventListener("click", () => {
   const deviceId = currentVideoDeviceId
@@ -208,8 +212,17 @@ ws.onmessage = (ev) => {
   if (msg.type === "gps") {
     const d = msg.data;
 
+    // Show GPS data panel
     document.getElementById("nodata").style.display  = "none";
     document.getElementById("gpsData").style.display = "";
+    
+    // Initialize map on first GPS data (when container is now visible)
+    if (!map) {
+      setTimeout(() => {
+        initMap();
+        if (map) map.invalidateSize();
+      }, 50);
+    }
 
     document.getElementById("gDevice").textContent  = msg.deviceId;
     document.getElementById("gTime").textContent    = d.ts ?? "-";
