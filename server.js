@@ -607,7 +607,7 @@ wss.on("connection", (ws, req) => {
   }
 });
 
-// ── Video streaming WebSocket: /ws/video?device=<id>&channel=<1|2> ────────────
+// ── Video streaming WebSocket: /ws/video?device=<id>&channel=<1|2> ───
 
 wssVideo.on("connection", (ws, req) => {
   const url      = new URL(req.url ?? "/", "http://localhost");
