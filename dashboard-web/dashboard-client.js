@@ -149,11 +149,14 @@ function initVideoPlayer(deviceId, channel) {
       enableWorker: false,
       lazyLoad: false,
       enableStashBuffer: false,
-      stashInitialSize: 32,
+      stashInitialSize: 128,
       autoCleanupSourceBuffer: true,
-      autoCleanupMaxBackwardDuration: 1,
-      autoCleanupMinBackwardDuration: 0.25,
-      fixAudioTimestampGap: false
+      autoCleanupMaxBackwardDuration: 3,
+      autoCleanupMinBackwardDuration: 1,
+      fixAudioTimestampGap: false,
+      liveBufferLatencyChasing: true,
+      liveBufferLatencyMaxLatency: 1.5,
+      liveBufferLatencyMinRemain: 0.4
     }
   );
   player.attachMediaElement(el);
@@ -166,15 +169,26 @@ function initVideoPlayer(deviceId, channel) {
 
   player.play().catch(() => {});
 
-  // Keep playback near the live edge to reduce visible delay.
+  // Keep playback near the live edge without triggering the loading spinner.
+  // Use playbackRate to gently catch up for small lag; hard-seek only for severe lag
+  // (leaving a 400 ms safety margin so the buffer is never instantly exhausted).
   const lowLatencyTick = setInterval(() => {
     if (!el || !el.buffered || el.buffered.length === 0) return;
     const end = el.buffered.end(el.buffered.length - 1);
     const lag = end - el.currentTime;
-    if (lag > 0.8) {
-      try { el.currentTime = Math.max(0, end - 0.08); } catch {}
+    if (lag > 3.0) {
+      // Severe lag — hard seek, but keep 400 ms of safety buffer
+      try { el.currentTime = Math.max(0, end - 0.4); } catch {}
+      el.playbackRate = 1.0;
+    } else if (lag > 0.8) {
+      // Moderate lag — speed up slightly to catch up without a seek stall
+      el.playbackRate = 1.15;
+    } else if (lag > 0.4) {
+      el.playbackRate = 1.07;
+    } else {
+      el.playbackRate = 1.0;
     }
-  }, 250);
+  }, 200);
 
   player.on(flvjs.Events.DESTROYING, () => clearInterval(lowLatencyTick));
   videoPlayers[key] = player;
