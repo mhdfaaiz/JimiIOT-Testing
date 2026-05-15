@@ -50,6 +50,73 @@ function setVideoStats(channel, stats) {
   setText(`${prefix}Last`,    stats.lastTs  ? fmtTs(stats.lastTs)           : "-");
 }
 
+/* ─── Map setup ─────────────────────────────────────────────────────── */
+let map = null;
+let deviceMarker = null;
+const GPS_INIT_LAT = 37.7749;
+const GPS_INIT_LNG = -122.4194;
+const GPS_INIT_ZOOM = 13;
+
+function initMap() {
+  if (map) return;
+  try {
+    map = L.map('mapContainer').setView([GPS_INIT_LAT, GPS_INIT_LNG], GPS_INIT_ZOOM);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors',
+      className: 'map-tile'
+    }).addTo(map);
+  } catch (e) {
+    console.error("Map init error:", e);
+  }
+}
+
+function updateMapMarker(lat, lng, speed, heading) {
+  if (!map) initMap();
+  
+  if (deviceMarker) {
+    map.removeLayer(deviceMarker);
+  }
+  
+  const iconHtml = `
+    <div style="
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: bold;
+      font-size: 20px;
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+      border: 3px solid white;
+      transform: rotate(${heading || 0}deg);
+    ">📍</div>
+  `;
+  
+  const customIcon = L.divIcon({
+    html: iconHtml,
+    iconSize: [40, 40],
+    className: 'custom-marker'
+  });
+  
+  deviceMarker = L.marker([lat, lng], { icon: customIcon })
+    .bindPopup(`
+      <div style="font-weight: 600; margin-bottom: 6px;">Device Location</div>
+      <div style="font-size: 0.9rem;">
+        <div>Lat: ${lat.toFixed(6)}</div>
+        <div>Lng: ${lng.toFixed(6)}</div>
+        <div>Speed: ${speed || 0} km/h</div>
+        <div>Heading: ${heading || 0}°</div>
+      </div>
+    `)
+    .addTo(map);
+  
+  map.setView([lat, lng], GPS_INIT_ZOOM);
+}
+
 /* ─── Video player ──────────────────────────────────────────────────────── */
 const videoPlayers = {};   // "deviceId:channel" → flvjs.Player
 
@@ -97,6 +164,11 @@ function destroyVideoPlayer(deviceId, channel) {
 
 /* ─── Start Video button ────────────────────────────────────────────────── */
 let currentVideoDeviceId = null;
+
+document.addEventListener("DOMContentLoaded", () => {
+  // Initialize map on page load
+  initMap();
+});
 
 document.getElementById("startVideoBtn")?.addEventListener("click", () => {
   const deviceId = currentVideoDeviceId
@@ -154,6 +226,11 @@ ws.onmessage = (ev) => {
     const fixEl = document.getElementById("gFix");
     fixEl.textContent = d.gpsFix ? "FIX" : "NO FIX";
     fixEl.className   = "badge " + (d.gpsFix ? "fix" : "nofix");
+
+    // Update map with real-time location
+    if (d.lat != null && d.lng != null) {
+      updateMapMarker(d.lat, d.lng, d.speedKmh || 0, d.heading || 0);
+    }
 
     prependLine(
       gpsLog,

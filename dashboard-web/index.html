@@ -4,139 +4,303 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>JC371 / JimiIoT — GPS &amp; Live Monitor</title>
+    <!-- Leaflet Map Library -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
     <style>
       *, *::before, *::after { box-sizing: border-box; }
       body {
-        font-family: system-ui, Arial, sans-serif;
-        margin: 0; padding: 16px;
-        background: #f0f2f5; color: #222;
+        font-family: 'Segoe UI', system-ui, Arial, sans-serif;
+        margin: 0; padding: 0;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: #222;
+        min-height: 100vh;
       }
-      h1 { margin: 0 0 16px; font-size: 1.4rem; }
-      h2 { margin: 0 0 10px; font-size: 1.1rem; color: #444; }
-      h3 { margin: 12px 0 8px; font-size: 0.95rem; color: #444; }
-      .row { display: flex; gap: 16px; flex-wrap: wrap; }
+      #header {
+        background: rgba(255, 255, 255, 0.95);
+        padding: 20px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+        backdrop-filter: blur(10px);
+        border-bottom: 2px solid #667eea;
+      }
+      h1 { 
+        margin: 0; 
+        font-size: 1.8rem; 
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        font-weight: 700;
+      }
+      h2 { margin: 0 0 12px; font-size: 1.15rem; color: #333; font-weight: 600; }
+      h3 { margin: 14px 0 8px; font-size: 0.95rem; color: #555; font-weight: 600; }
+      #content {
+        padding: 24px;
+        max-width: 1600px;
+        margin: 0 auto;
+      }
+      .row { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }
       .card {
-        background: #fff; border: 1px solid #ddd;
-        border-radius: 10px; padding: 16px; flex: 1; min-width: 300px;
+        background: rgba(255, 255, 255, 0.97);
+        border: none;
+        border-radius: 16px; 
+        padding: 24px; 
+        flex: 1; 
+        min-width: 350px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        backdrop-filter: blur(8px);
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
       }
-      .field { display: flex; justify-content: space-between; margin: 6px 0; font-size: 0.9rem; }
-      .label { color: #888; }
-      .value { font-weight: 600; }
+      .card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+      }
+      .map-card {
+        min-width: 100%;
+      }
+      .field { 
+        display: flex; 
+        justify-content: space-between; 
+        margin: 10px 0; 
+        padding: 8px 0;
+        font-size: 0.95rem;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+      }
+      .field:last-child { border-bottom: none; }
+      .label { color: #777; font-weight: 500; }
+      .value { 
+        font-weight: 700; 
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
       .status-bar {
-        display: flex; align-items: center; gap: 8px;
-        font-size: 0.82rem; padding: 6px 0; color: #555;
+        display: flex; align-items: center; gap: 12px;
+        font-size: 0.9rem; padding: 8px 0; color: #555; margin-bottom: 16px;
       }
       .dot {
-        width: 10px; height: 10px; border-radius: 50%;
+        width: 12px; height: 12px; border-radius: 50%;
         background: #ccc; flex-shrink: 0;
+        animation: pulse 2s infinite;
       }
-      .dot.connected { background: #2ecc71; }
-      .dot.error     { background: #e74c3c; }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.6; }
+      }
+      .dot.connected { 
+        background: #10b981; 
+        box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+      }
+      .dot.error { 
+        background: #ef4444;
+        box-shadow: 0 0 8px rgba(239, 68, 68, 0.6);
+      }
       pre {
-        background: #f7f7f7; border: 1px solid #e5e5e5;
-        border-radius: 6px; padding: 10px; margin-top: 10px;
-        font-size: 0.78rem; overflow: auto; max-height: 240px;
-        white-space: pre-wrap; word-break: break-all;
+        background: #f8f9fa; 
+        border: 1px solid #e9ecef;
+        border-radius: 8px; 
+        padding: 12px; 
+        margin-top: 12px;
+        font-size: 0.82rem; 
+        overflow: auto; 
+        max-height: 200px;
+        white-space: pre-wrap; 
+        word-break: break-all;
+        font-family: 'Courier New', monospace;
+        color: #555;
       }
       .badge {
-        display: inline-block; padding: 2px 8px; border-radius: 12px;
-        font-size: 0.75rem; font-weight: 700;
+        display: inline-block; 
+        padding: 4px 12px; 
+        border-radius: 20px;
+        font-size: 0.8rem; 
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
       }
-      .badge.on  { background: #d4f8e8; color: #1a7e4a; }
-      .badge.off { background: #fde8e8; color: #a33; }
-      .badge.fix { background: #d4e8f8; color: #1a4a7e; }
-      .badge.nofix { background: #f8f4d4; color: #7e5a1a; }
-      #nodata { color: #aaa; font-style: italic; font-size: 0.9rem; }
+      .badge.on  { 
+        background: linear-gradient(135deg, #10b981, #059669);
+        color: white;
+        box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+      }
+      .badge.off { 
+        background: linear-gradient(135deg, #ef4444, #dc2626);
+        color: white;
+        box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+      }
+      .badge.fix { 
+        background: linear-gradient(135deg, #3b82f6, #2563eb);
+        color: white;
+        box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+      }
+      .badge.nofix { 
+        background: linear-gradient(135deg, #f59e0b, #d97706);
+        color: white;
+        box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+      }
+      #nodata { 
+        color: #aaa; 
+        font-style: italic; 
+        font-size: 0.95rem;
+        padding: 20px;
+        text-align: center;
+      }
 
-      .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .two-col { 
+        display: grid; 
+        grid-template-columns: 1fr 1fr; 
+        gap: 16px;
+      }
+      @media (max-width: 1024px) {
+        .two-col { grid-template-columns: 1fr; }
+      }
       .mini {
-        border: 1px dashed #ddd;
+        border: 1px solid #e9ecef;
+        border-radius: 12px;
+        padding: 14px;
+        background: linear-gradient(135deg, rgba(102, 126, 234, 0.05), rgba(118, 75, 162, 0.05));
+      }
+      
+      #mapContainer {
+        width: 100%;
+        height: 400px;
+        border-radius: 12px;
+        overflow: hidden;
+        margin-bottom: 16px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      }
+      
+      .video-controls {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 16px;
+        padding: 12px 16px;
+        background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));
+        border-radius: 12px;
+      }
+      
+      #startVideoBtn {
+        padding: 10px 24px;
+        font-size: 0.95rem;
+        cursor: pointer;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 10px;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+      }
+      
+      #startVideoBtn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+      }
+      
+      #startVideoBtn:active {
+        transform: translateY(0);
+      }
+      
+      #videoStatus {
+        font-size: 0.9rem;
+        color: #666;
+        flex: 1;
+      }
+      
+      video {
+        width: 100%;
+        height: 100%;
+        background: #000;
         border-radius: 8px;
-        padding: 10px;
-        background: #fcfcfc;
+        display: block;
+        object-fit: cover;
       }
     </style>
   </head>
   <body>
-    <h1>🛰️ JC371 / JimiIoT — GPS Tracking &amp; Live Monitor</h1>
-
-    <div class="status-bar">
-      <span class="dot" id="wsDot"></span>
-      <span id="wsStatus">Connecting…</span>
+    <div id="header">
+      <h1>🛰️ JC371 / JimiIoT — GPS Tracking &amp; Live Monitor</h1>
+      <div class="status-bar">
+        <span class="dot" id="wsDot"></span>
+        <span id="wsStatus">Connecting…</span>
+      </div>
     </div>
 
-    <div class="row" style="margin-top:14px;">
+    <div id="content">
 
-      <!-- GPS panel -->
-      <div class="card">
-        <h2>📍 GPS Tracking (JT/T 808)</h2>
-        <div id="nodata">No GPS data received yet.</div>
+      <!-- Map and GPS panel -->
+      <div class="card map-card">
+        <h2>📍 Live Location Tracker</h2>
+        <div id="nodata">Waiting for GPS data...</div>
         <div id="gpsData" style="display:none;">
-          <div class="field"><span class="label">Device</span>   <span class="value" id="gDevice">-</span></div>
-          <div class="field"><span class="label">Time (UTC)</span><span class="value" id="gTime">-</span></div>
-          <div class="field"><span class="label">Latitude</span>  <span class="value" id="gLat">-</span></div>
-          <div class="field"><span class="label">Longitude</span> <span class="value" id="gLng">-</span></div>
-          <div class="field"><span class="label">Speed</span>     <span class="value" id="gSpeed">-</span></div>
-          <div class="field"><span class="label">Heading</span>   <span class="value" id="gHeading">-</span></div>
-          <div class="field"><span class="label">Altitude</span>  <span class="value" id="gAlt">-</span></div>
-          <div class="field">
-            <span class="label">ACC / Fix</span>
-            <span><span class="badge off" id="gACC">OFF</span>&nbsp;<span class="badge nofix" id="gFix">NO FIX</span></span>
+          <div id="mapContainer"></div>
+          <div class="row">
+            <div style="flex: 2;">
+              <h3>Device Information</h3>
+              <div class="field"><span class="label">Device ID</span>   <span class="value" id="gDevice">-</span></div>
+              <div class="field"><span class="label">Last Update</span><span class="value" id="gTime">-</span></div>
+              <div class="field"><span class="label">Status</span>
+                <span><span class="badge off" id="gACC">OFF</span>&nbsp;<span class="badge nofix" id="gFix">NO FIX</span></span>
+              </div>
+            </div>
+            <div style="flex: 2;">
+              <h3>Position &amp; Motion</h3>
+              <div class="field"><span class="label">Latitude</span>  <span class="value" id="gLat">-</span></div>
+              <div class="field"><span class="label">Longitude</span> <span class="value" id="gLng">-</span></div>
+              <div class="field"><span class="label">Altitude</span>  <span class="value" id="gAlt">-</span></div>
+            </div>
+            <div style="flex: 1.5;">
+              <h3>Motion Data</h3>
+              <div class="field"><span class="label">Speed</span>     <span class="value" id="gSpeed">-</span></div>
+              <div class="field"><span class="label">Heading</span>   <span class="value" id="gHeading">-</span></div>
+            </div>
           </div>
         </div>
-        <h2 style="margin-top:14px;">📜 GPS History (latest 20)</h2>
-        <pre id="gpsLog">—</pre>
       </div>
 
       <!-- Video panel -->
       <div class="card">
-        <h2>📹 Live Video (JT/T 1078)</h2>
-        <p style="font-size:0.85rem;color:#888;margin:0 0 10px;">
-          Click <strong>Start Video</strong> to send 0x9101 to the device and open live players.
-        </p>
-
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
-          <button id="startVideoBtn" style="padding:6px 16px;font-size:0.9rem;cursor:pointer;">▶ Start Video</button>
-          <span id="videoStatus" style="font-size:0.82rem;color:#888;"></span>
+        <h2>📹 Live Video Stream (JT/T 1078)</h2>
+        <div class="video-controls">
+          <button id="startVideoBtn">▶ Start Video</button>
+          <span id="videoStatus"></span>
         </div>
 
-        <div class="two-col" style="margin-bottom:14px;">
+        <div class="two-col" style="margin-bottom:16px;">
           <div>
-            <h3 style="margin-top:0;">Channel 1</h3>
-            <video id="videoEl1" controls muted playsinline
-              style="width:100%;background:#000;border-radius:6px;display:block;"></video>
+            <h3>Channel 1 Stream</h3>
+            <video id="videoEl1" controls muted playsinline></video>
           </div>
           <div>
-            <h3 style="margin-top:0;">Channel 2</h3>
-            <video id="videoEl2" controls muted playsinline
-              style="width:100%;background:#000;border-radius:6px;display:block;"></video>
+            <h3>Channel 2 Stream</h3>
+            <video id="videoEl2" controls muted playsinline></video>
           </div>
         </div>
 
-        <h3>Channel activity</h3>
+        <h3>Stream Statistics</h3>
         <div class="two-col">
           <div class="mini">
-            <div class="field"><span class="label">CH1 bytes</span>   <span class="value" id="ch1Bytes">-</span></div>
-            <div class="field"><span class="label">CH1 packets</span> <span class="value" id="ch1Packets">-</span></div>
-            <div class="field"><span class="label">CH1 last</span>    <span class="value" id="ch1Last">-</span></div>
+            <h3 style="margin-top: 0;">Channel 1</h3>
+            <div class="field"><span class="label">Data</span>   <span class="value" id="ch1Bytes">-</span></div>
+            <div class="field"><span class="label">Packets</span> <span class="value" id="ch1Packets">-</span></div>
+            <div class="field"><span class="label">Last Rx</span>    <span class="value" id="ch1Last">-</span></div>
           </div>
           <div class="mini">
-            <div class="field"><span class="label">CH2 bytes</span>   <span class="value" id="ch2Bytes">-</span></div>
-            <div class="field"><span class="label">CH2 packets</span> <span class="value" id="ch2Packets">-</span></div>
-            <div class="field"><span class="label">CH2 last</span>    <span class="value" id="ch2Last">-</span></div>
+            <h3 style="margin-top: 0;">Channel 2</h3>
+            <div class="field"><span class="label">Data</span>   <span class="value" id="ch2Bytes">-</span></div>
+            <div class="field"><span class="label">Packets</span> <span class="value" id="ch2Packets">-</span></div>
+            <div class="field"><span class="label">Last Rx</span>    <span class="value" id="ch2Last">-</span></div>
           </div>
         </div>
 
-        <h3 style="margin-top:14px;">Last packet</h3>
+        <h3 style="margin-top:14px;">Packet Details</h3>
         <div class="field"><span class="label">Device</span>       <span class="value" id="vDevice">-</span></div>
         <div class="field"><span class="label">Channel</span>      <span class="value" id="vChannel">-</span></div>
-        <div class="field"><span class="label">Payload type</span> <span class="value" id="vType">-</span></div>
-        <div class="field"><span class="label">Packet size</span>  <span class="value" id="vSize">-</span></div>
-
-        <h2 style="margin-top:14px;">📜 Video Packet Log</h2>
-        <pre id="videoLog">—</pre>
+        <div class="field"><span class="label">Type</span> <span class="value" id="vType">-</span></div>
+        <div class="field"><span class="label">Size</span>  <span class="value" id="vSize">-</span></div>
       </div>
-
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js"></script>
