@@ -21,14 +21,17 @@ app.use(express.json());
 
 const server = http.createServer(app);
 
-// Two separate WebSocket servers — dashboard clients on "/" and video clients on "/ws/video".
+// Three WebSocket servers — dashboard clients on "/", video on "/ws/video", audio on "/ws/audio".
 const wss      = new WebSocketServer({ noServer: true });
 const wssVideo = new WebSocketServer({ noServer: true });
+const wssAudio = new WebSocketServer({ noServer: true });
 
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url ?? "/", "http://localhost");
   if (url.pathname === "/ws/video") {
     wssVideo.handleUpgrade(req, socket, head, (ws) => wssVideo.emit("connection", ws, req));
+  } else if (url.pathname === "/ws/audio") {
+    wssAudio.handleUpgrade(req, socket, head, (ws) => wssAudio.emit("connection", ws, req));
   } else {
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   }
@@ -46,8 +49,12 @@ const state = {
   sessionsByShortId: new Map(), // canonical 12-char deviceId → session  (alias index)
   // "deviceId:channel" → { subs: Set<{ws}>, lastSps: Buffer|null, lastPps: Buffer|null }
   videoChannels:   new Map(),
+  audioChannels:   new Map(),   // "deviceId:channel" → audio channel state
   clients:         new Set()    // dashboard WebSocket clients
 };
+
+// Per-channel audio fragment accumulator (separate from video reassembler)
+const audioPending = new Map();  // "deviceId:channel" → Buffer[]
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -113,6 +120,117 @@ function createVideoChannelState() {
     lastSps: null,
     lastPps: null
   };
+}
+
+// ── Audio channel helpers ─────────────────────────────────────────────────────
+
+function createAudioChannelState() {
+  return { subs: new Set(), ffmpeg: null, ffmpegStarting: false };
+}
+
+/**
+ * Reassemble fragmented JT1078 audio packets.
+ * Returns the complete audio body Buffer, or null if more fragments are needed.
+ */
+function reassembleAudioPacket({ deviceId, channel, subFlag, dataBody }) {
+  const key = `${canonicalId(deviceId)}:${channel}`;
+  switch (subFlag) {
+    case 0x00:  // complete — no fragmentation
+      audioPending.delete(key);
+      return Buffer.from(dataBody);
+    case 0x01:  // first sub-packet
+      audioPending.set(key, [Buffer.from(dataBody)]);
+      return null;
+    case 0x03:  // middle sub-packet
+      audioPending.get(key)?.push(Buffer.from(dataBody));
+      return null;
+    case 0x02: {  // last sub-packet
+      const bufs = audioPending.get(key);
+      if (!bufs) return null;
+      bufs.push(Buffer.from(dataBody));
+      audioPending.delete(key);
+      return Buffer.concat(bufs);
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Start a per-channel audio FFmpeg process.
+ * Input:  raw audio bytes from JT1078 (default G.711 A-law 8 kHz mono)
+ * Output: signed 16-bit LE PCM at 16 000 Hz, streamed to all audio WebSocket subscribers.
+ *
+ * Configurable via env:
+ *   AUDIO_CODEC  — ffmpeg input format (default: alaw | alternatives: mulaw, s16le, s16be, adpcm_ima_wav)
+ *   AUDIO_RATE   — input sample rate in Hz (default: 8000)
+ */
+function ensureAudioTranscoder(key, ach) {
+  if (ach.ffmpeg || ach.ffmpegStarting || ach.subs.size === 0) return;
+
+  const inputCodec = String(process.env.AUDIO_CODEC ?? "alaw").toLowerCase();
+  const inputRate  = Number(process.env.AUDIO_RATE  ?? 8000);
+
+  ach.ffmpegStarting = true;
+  console.log(`[FFmpeg/audio] Starting audio transcoder for ${key}`, { inputCodec, inputRate });
+
+  ach.ffmpeg = spawn("ffmpeg", [
+    "-hide_banner",
+    "-loglevel", "warning",
+    "-fflags", "nobuffer",
+    "-f",  inputCodec,
+    "-ar", String(inputRate),
+    "-ac", "1",
+    "-i",  "pipe:0",
+    "-f",  "s16le",
+    "-ar", "16000",
+    "-ac", "1",
+    "pipe:1"
+  ]);
+
+  const ff = ach.ffmpeg;
+
+  ff.stdout.on("data", (data) => {
+    for (const s of ach.subs) {
+      if (s.ws.readyState === WebSocket.OPEN) {
+        try { s.ws.send(data, { binary: true }); } catch {}
+      }
+    }
+  });
+
+  ff.stderr.on("data", (d) => {
+    const text = d.toString().trim();
+    if (text) console.error(`[FFmpeg/audio] ${key}:`, text);
+  });
+
+  ff.on("close", (code) => {
+    console.log(`[FFmpeg/audio] ${key} exited`, { code });
+    if (state.audioChannels.get(key)?.ffmpeg === ff) {
+      state.audioChannels.get(key).ffmpeg = null;
+    }
+    ach.ffmpegStarting = false;
+    // Auto-restart if subscribers remain
+    if (ach.subs.size > 0) {
+      setTimeout(() => ensureAudioTranscoder(key, ach), 1000);
+    }
+  });
+}
+
+function handleAudioPacket(packet) {
+  const cid = canonicalId(packet.deviceId);
+  const key  = `${cid}:${packet.channel}`;
+
+  const ach = state.audioChannels.get(key);
+  if (!ach || ach.subs.size === 0) return;  // no subscribers — discard
+
+  const audioData = reassembleAudioPacket(packet);
+  if (!audioData) return;
+
+  ensureAudioTranscoder(key, ach);
+
+  if (ach.ffmpeg?.stdin?.writable) {
+    try { ach.ffmpeg.stdin.write(audioData); } catch {}
+  }
 }
 
 function looksLikeMpegPs(data) {
@@ -653,6 +771,43 @@ wssVideo.on("connection", (ws, req) => {
   ws.on("error", removeSub);
 });
 
+// ── Audio streaming WebSocket: /ws/audio?device=<id>&channel=<1|2> ─────────
+
+wssAudio.on("connection", (ws, req) => {
+  const url       = new URL(req.url ?? "/", "http://localhost");
+  const rawDevice = url.searchParams.get("device") ?? "";
+  const deviceId  = canonicalId(rawDevice);
+  const channel   = Number(url.searchParams.get("channel") ?? 1);
+
+  if (!deviceId) { ws.close(1008, "Missing device param"); return; }
+
+  const key = `${deviceId}:${channel}`;
+  let ach = state.audioChannels.get(key);
+  if (!ach) {
+    ach = createAudioChannelState();
+    state.audioChannels.set(key, ach);
+  }
+
+  const sub = { ws };
+  ach.subs.add(sub);
+  console.log(`[WS/audio] subscriber connected`, { deviceId, channel });
+
+  // Start audio transcoder if not already running
+  ensureAudioTranscoder(key, ach);
+
+  const removeSub = () => {
+    ach.subs.delete(sub);
+    console.log(`[WS/audio] subscriber left`, { deviceId, channel });
+    if (ach.subs.size === 0 && ach.ffmpeg) {
+      ach.ffmpeg.kill("SIGKILL");
+      ach.ffmpeg = null;
+    }
+  };
+
+  ws.on("close", removeSub);
+  ws.on("error", removeSub);
+});
+
 // ── Static files ──────────────────────────────────────────────────────────────
 
 app.use(express.static(path.join(__dirname, "dashboard-web")));
@@ -750,8 +905,12 @@ function updateVideoStats({ deviceId, channel, payloadType, dataBody }) {
 function handleJT1078Packet(packet) {
   updateVideoStats(packet);
 
-  // Keep reassembly strictly video-only. Mixing audio and video fragments on the
-  // same device:channel key can corrupt frame assembly and break decode.
+  // Route audio to the dedicated audio pipeline; keep the video reassembler
+  // strictly video-only so mixing fragments can never corrupt video decode.
+  if (packet.payloadType === "audio") {
+    handleAudioPacket(packet);
+    return;
+  }
   if (!packet.payloadType.startsWith("video")) return;
 
   const frame = reassembler.push(packet);

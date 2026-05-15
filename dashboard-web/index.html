@@ -213,6 +213,40 @@
         color: #666;
         flex: 1;
       }
+
+      .audio-controls {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 8px;
+        padding: 8px 12px;
+        background: rgba(0,0,0,0.04);
+        border-radius: 8px;
+      }
+      .audio-btn {
+        padding: 6px 16px;
+        font-size: 0.85rem;
+        cursor: pointer;
+        background: linear-gradient(135deg, #10b981, #059669);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-weight: 600;
+        transition: all 0.2s ease;
+        box-shadow: 0 2px 8px rgba(16,185,129,0.3);
+      }
+      .audio-btn:hover:not(:disabled) {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(16,185,129,0.5);
+      }
+      .audio-btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .audio-status {
+        font-size: 0.82rem;
+        color: #888;
+      }
       
       video {
         width: 100%;
@@ -277,10 +311,18 @@
           <div>
             <h3>Channel 1 Stream</h3>
             <video id="videoEl1" controls muted playsinline></video>
+            <div class="audio-controls">
+              <button id="audioBtn1" class="audio-btn" disabled>🔇 Unmute Audio</button>
+              <span id="audioStatus1" class="audio-status">not started</span>
+            </div>
           </div>
           <div>
             <h3>Channel 2 Stream</h3>
             <video id="videoEl2" controls muted playsinline></video>
+            <div class="audio-controls">
+              <button id="audioBtn2" class="audio-btn" disabled>🔇 Unmute Audio</button>
+              <span id="audioStatus2" class="audio-status">not started</span>
+            </div>
           </div>
         </div>
 

@@ -124,6 +124,101 @@ function updateMapMarker(lat, lng, speed, heading) {
   map.setView([lat, lng], GPS_INIT_ZOOM);
 }
 
+/* ─── Audio players (Web Audio API over /ws/audio) ──────────────────────── */
+const audioPlayers = {};   // "deviceId:channel" → { audioCtx, ws, muted, nextPlayTime }
+
+const AUDIO_SAMPLE_RATE = 16000;  // must match server-side FFmpeg output rate
+
+function initAudioPlayer(deviceId, channel) {
+  const key = `${deviceId}:${channel}`;
+  if (audioPlayers[key]) return;
+
+  const wsProto = location.protocol === "https:" ? "wss" : "ws";
+  const url = `${wsProto}://${location.host}/ws/audio?device=${encodeURIComponent(deviceId)}&channel=${channel}`;
+
+  let audioCtx = null;
+  let nextPlayTime = 0;
+
+  const audioWs = new WebSocket(url);
+  audioWs.binaryType = "arraybuffer";
+
+  audioWs.onopen  = () => {
+    _setAudioStatus(channel, "ready — click Unmute to hear");
+    const btn = document.getElementById(`audioBtn${channel}`);
+    if (btn) btn.disabled = false;
+  };
+  audioWs.onclose = () => {
+    _setAudioStatus(channel, "disconnected");
+    const btn = document.getElementById(`audioBtn${channel}`);
+    if (btn) btn.disabled = true;
+  };
+  audioWs.onerror = () => _setAudioStatus(channel, "error");
+
+  audioWs.onmessage = (ev) => {
+    const player = audioPlayers[key];
+    if (!player || player.muted || !ev.data?.byteLength) return;
+
+    // Lazily create AudioContext on first unmuted message (needs prior user gesture)
+    if (!audioCtx) {
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: AUDIO_SAMPLE_RATE });
+        player.audioCtx = audioCtx;
+      } catch (e) {
+        console.warn("[audio] AudioContext create failed:", e);
+        return;
+      }
+    }
+    if (audioCtx.state === "suspended") {
+      audioCtx.resume().catch(() => {});
+      return;
+    }
+
+    // Decode 16-bit signed LE PCM → Float32 and schedule playback
+    const pcm = new Int16Array(ev.data);
+    const floats = new Float32Array(pcm.length);
+    for (let i = 0; i < pcm.length; i++) floats[i] = pcm[i] / 32768.0;
+
+    const buf = audioCtx.createBuffer(1, floats.length, AUDIO_SAMPLE_RATE);
+    buf.copyToChannel(floats, 0);
+
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+
+    const now = audioCtx.currentTime;
+    // If we've fallen behind (e.g. tab was hidden), reset scheduling ahead of now
+    if (nextPlayTime < now + 0.08) nextPlayTime = now + 0.08;
+    src.start(nextPlayTime);
+    nextPlayTime += buf.duration;
+  };
+
+  audioPlayers[key] = { audioCtx, ws: audioWs, muted: true, nextPlayTime: 0 };
+  _setAudioStatus(channel, "connecting…");
+}
+
+function toggleAudioMute(deviceId, channel) {
+  const key = `${deviceId}:${channel}`;
+  const player = audioPlayers[key];
+  if (!player) return;
+
+  player.muted = !player.muted;
+  const btn = document.getElementById(`audioBtn${channel}`);
+  if (btn) btn.textContent = player.muted ? "🔇 Unmute Audio" : "🔊 Mute Audio";
+
+  if (!player.muted) {
+    _setAudioStatus(channel, "playing");
+    // Resume context if suspended (browsers suspend on inactivity)
+    if (player.audioCtx?.state === "suspended") player.audioCtx.resume().catch(() => {});
+  } else {
+    _setAudioStatus(channel, "muted");
+  }
+}
+
+function _setAudioStatus(channel, text) {
+  const el = document.getElementById(`audioStatus${channel}`);
+  if (el) el.textContent = text;
+}
+
 /* ─── Video player ──────────────────────────────────────────────────────── */
 const videoPlayers = {};   // "deviceId:channel" → flvjs.Player
 
@@ -232,12 +327,25 @@ document.getElementById("startVideoBtn")?.addEventListener("click", () => {
       document.getElementById("videoStatus").textContent = ok
         ? "✅ 0x9101 accepted — connecting players…"
         : "⚠ 0x9101 failed — see console";
-      [1, 2].forEach((ch) => initVideoPlayer(deviceId, ch));
+      [1, 2].forEach((ch) => {
+        initVideoPlayer(deviceId, ch);
+        initAudioPlayer(deviceId, ch);
+      });
     })
     .catch((err) => {
       console.error("[video] start error", err);
       document.getElementById("videoStatus").textContent = "❌ API error — see console";
     });
+});
+
+/* ─── Audio button wiring ────────────────────────────────────────────────── */
+[1, 2].forEach((ch) => {
+  document.getElementById(`audioBtn${ch}`)?.addEventListener("click", () => {
+    const deviceId = currentVideoDeviceId
+                  || document.getElementById("gDevice")?.textContent?.trim();
+    if (!deviceId || deviceId === "-") return;
+    toggleAudioMute(deviceId, ch);
+  });
 });
 
 /* ─── Message handler ────────────────────────────────────────────────────── */
