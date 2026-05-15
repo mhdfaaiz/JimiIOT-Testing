@@ -1,6 +1,6 @@
 import net from "net";
-import { unescapeJT808, xorChecksum } from "./codec.js";
-import { handleJT808Message, encodePlatformGeneralResponse8001 } from "./handlers.js";
+import { unescapeJT808, xorChecksum } from "./protocol-codec.js";
+import { handleJT808Message, encodePlatformGeneralResponse8001 } from "./message-handlers.js";
 
 function findFrame(buffer) {
   const start = buffer.indexOf(0x7e);

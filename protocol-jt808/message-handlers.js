@@ -1,4 +1,4 @@
-import { escapeJT808, xorChecksum, parseBcdTimeYYMMDDhhmmss } from "./codec.js";
+import { escapeJT808, xorChecksum, parseBcdTimeYYMMDDhhmmss } from "./protocol-codec.js";
 
 function toFrame(unescapedWithoutDelimiters) {
   const esc = escapeJT808(unescapedWithoutDelimiters);

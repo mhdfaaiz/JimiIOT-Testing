@@ -1,242 +1,316 @@
-"# JimiIoT / JC371 — GPS Tracking & Live Video Monitor
+# JC371 / JimiIoT GPS + Live Video Monitor
 
-A minimal Node.js demo application that integrates a **JC371 (Jimi IoT)** device for:
+This project receives data from JC371 devices and shows it on a browser dashboard.
 
-- 📍 **GPS tracking** via the [JT/T 808-2019](https://www.transport.gov.cn/) protocol (TCP).
-- 📹 **Live video stream reception** via the JT/T 1078 protocol (UDP).
-- 🖥️ A real-time **web dashboard** pushed over WebSocket.
+It supports:
+- JT/T 808 over TCP for GPS and device control
+- JT/T 1078 over UDP/TCP for live video packets
+- Real-time web dashboard via WebSocket
+- Live video playback in browser using FLV over WebSocket
 
----
-
-## Requirements
-
-- **Node.js 18+** (ES Modules / `node --version` should be ≥ 18)
-- A public IP address (or port-forwarded host) that your JC371 device can reach.
+This guide is written for freshers and explains everything from scratch.
 
 ---
 
-## Install & Run
+## 1. What You Will Build
+
+After setup is complete, you will have:
+- A backend server listening for device data
+- A browser dashboard showing GPS and video channel activity
+- Start Video button that sends JT808 message 0x9101
+- Working live stream (Channel 1 and Channel 2 video players)
+
+---
+
+## 2. Tech Stack and Libraries
+
+## Runtime
+- Node.js 18 or newer
+- FFmpeg installed on system PATH
+
+## NPM packages (installed by npm install)
+- express: HTTP server and APIs
+- ws: WebSocket server and client communication
+
+## Browser library (loaded from CDN)
+- flv.js 1.6.2 in dashboard-web/index.html
+
+## Built-in Node modules used in code
+- http
+- path
+- os
+- child_process
+- url
+- net
+- dgram
+
+---
+
+## 3. Project Structure
+
+- server.js: Main app, API, JT808/JT1078 wiring, FFmpeg pipeline, WebSocket hub
+- protocol-jt808/protocol-codec.js: JT808 escape/unescape, checksum, BCD time parsing
+- protocol-jt808/message-handlers.js: JT808 message parser + encoder for 0x8001, 0x8100, 0x9101, 0x9102
+- protocol-jt808/tcp-gateway.js: TCP server for JT808 frames
+- protocol-jt1078/udp-stream-receiver.js: JT1078 UDP packet parser
+- protocol-jt1078/tcp-stream-receiver.js: JT1078 TCP packet parser
+- protocol-jt1078/frame-reassembler.js: Reassembles fragmented JT1078 payloads into complete frames
+- dashboard-web/index.html: Dashboard UI + players
+- dashboard-web/dashboard-client.js: Browser-side WebSocket + video player logic
+- JT808-JT1078-TCP-Integration-Guide.md: Detailed TCP/JT808/JT1078 workflow documentation
+
+---
+
+## 4. End-to-End Workflow (Simple)
+
+1. Device connects to JT808 TCP port and sends heartbeat/auth/location.
+2. Server parses JT808 frame and acknowledges with 0x8001.
+3. On dashboard, GPS updates are pushed over WebSocket.
+4. User clicks Start Video.
+5. Server sends JT808 0x9101 to ask device to start stream.
+6. Device starts sending JT1078 packets (UDP or TCP depending on accepted variant).
+7. JT1078 reassembler joins fragmented payloads into full frames.
+8. Server starts FFmpeg and feeds normalized video frames.
+9. FFmpeg outputs FLV bytes.
+10. FLV bytes are forwarded to browser via /ws/video.
+11. flv.js plays stream in Channel 1 and Channel 2 video elements.
+
+---
+
+## 5. Video Stability Fixes Already Included
+
+The current code includes these reliability improvements:
+- Wait for keyframe + SPS/PPS (and VPS for HEVC) before first decode start
+- Automatic Annex-B normalization and parameter set injection
+- Codec lock after first successful output (prevents unstable codec flipping)
+- Decoder-error restart on next keyframe (safe restart timing)
+- Per-channel pre-roll buffering for smooth player refresh/reconnect
+- Better fallback behavior between h264/hevc/mpeg input formats
+
+This is why your video is now working reliably.
+
+---
+
+## 6. Install from Scratch
+
+## Windows
+1. Install Node.js 18+ from official Node.js website.
+2. Install FFmpeg and add ffmpeg.exe to PATH.
+3. Open PowerShell in project folder.
+4. Run:
 
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. Start the server
 npm start
 ```
 
-Open your browser at **http://localhost:3000**.
-
-### Custom ports (optional)
-
-| Environment variable | Default | Purpose |
-|---|---|---|
-| `PORT` | `3000` | Web app HTTP + WebSocket |
-| `JT808_PORT` | `6808` | JT/T 808 TCP server (GPS) |
-| `JT1078_UDP_PORT` | `7001` | JT/T 1078 UDP server port (set to `0` to disable UDP) |
-| `JT1078_TCP_PORT` | `7001` | JT/T 1078 TCP server port (set to `0` to disable TCP) |
-| `JT1078_PREFER_TCP` | `0` | Set to `1` to try TCP variants before UDP in 0x9101 |
-| `VIDEO_CODEC` | _(auto-detect)_ | Force `h264` or `hevc` if the browser stays blank |
-| `PUBLIC_IP` | _(auto-detect)_ | Public IP sent to device in 0x9101 |
-| `VIDEO_SERVER_IP` | _(falls back to PUBLIC_IP)_ | Override IP for video server in 0x9101 |
-| `REGISTER_ON_AUTH` | `0` | Set to `1` to mark device as registered on successful auth (for devices that skip 0x0100) |
-| `JT808_9101_ALLOW_ZERO_PORTS` | `1` | Set to `0` to only send 0x9101 variants with non-zero TCP and UDP ports |
+## Ubuntu / Debian
+1. Install Node.js 18+.
+2. Install FFmpeg:
 
 ```bash
-PORT=8080 JT808_PORT=6808 JT1078_UDP_PORT=7001 JT1078_TCP_PORT=7001 npm start
+sudo apt update
+sudo apt install -y ffmpeg
+```
+
+3. Install dependencies and run:
+
+```bash
+npm install
+npm start
+```
+
+You should see startup logs for:
+- Web app port
+- JT808 TCP port
+- JT1078 UDP port
+- JT1078 TCP port
+
+---
+
+## 7. Required Ports
+
+Open these ports in firewall / cloud security group:
+
+- PORT (default 3008): Web dashboard + APIs
+- JT808_PORT (default 6808, TCP): GPS/auth/control
+- JT1078_UDP_PORT (default 7001, UDP): Video stream (UDP mode)
+- JT1078_TCP_PORT (default 7001, TCP): Video stream (TCP mode)
+
+If device is remote, set public address correctly.
+
+---
+
+## 8. Environment Variables
+
+All supported variables in current implementation:
+
+| Variable | Default | Meaning |
+|---|---:|---|
+| PORT | 3008 | Web app port |
+| JT808_PORT | 6808 | JT808 TCP server port |
+| JT1078_UDP_PORT | 7001 | JT1078 UDP port (set 0 to disable UDP) |
+| JT1078_TCP_PORT | 7001 | JT1078 TCP port (set 0 to disable TCP) |
+| JT1078_PREFER_TCP | 0 | Use TCP-first variant ordering for 0x9101 |
+| VIDEO_CODEC | auto | Force h264 or hevc |
+| VIDEO_INPUT_FORMAT | auto | Force ffmpeg demux format: h264 / hevc / mpeg |
+| VIDEO_PROBE_MS | 12000 | Probe timeout before fallback retry |
+| VIDEO_PREROLL_FRAMES | 40 | Max pre-roll frames kept per channel |
+| VIDEO_PREROLL_BYTES | 2097152 | Max pre-roll bytes kept per channel |
+| PUBLIC_IP | auto | Public IP sent in 0x9101 if VIDEO_SERVER_IP missing |
+| VIDEO_SERVER_IP | fallback PUBLIC_IP | Explicit IP used in 0x9101 |
+| REGISTER_ON_AUTH | 0 | Mark device registered when 0x0102 auth succeeds |
+| AUTO_START_VIDEO | 0 | Auto send 0x9101 after auth |
+| JT808_9101_ALLOW_ZERO_PORTS | 1 | Allow 0-port variant trials |
+
+## Example (Linux)
+
+```bash
+PORT=3008 \
+JT808_PORT=6808 \
+JT1078_TCP_PORT=7001 \
+JT1078_UDP_PORT=7001 \
+REGISTER_ON_AUTH=1 \
+VIDEO_CODEC=h264 \
+npm start
 ```
 
 ---
 
-## Ports to expose to the device
+## 9. Device Setup Checklist
 
-| Port | Protocol | Purpose |
-|---|---|---|
-| `6808` (or `$JT808_PORT`) | **TCP** | JT/T 808 gateway — GPS, heartbeat, auth |
-| `7001` (or `$JT1078_UDP_PORT`) | **UDP** | JT/T 1078 stream receiver — live video packets (UDP) |
-| `7001` (or `$JT1078_TCP_PORT`) | **TCP** | JT/T 1078 stream receiver — live video packets (TCP) |
+Configure your JC371 platform/device with:
+- Server IP: your public server IP
+- JT808 port: 6808 (or your custom JT808_PORT)
+- Media server IP: same public server IP
+- Media TCP/UDP ports: 7001 (or your custom ports)
+- Protocol mode: JT808-2019 + JT1078 enabled
 
-Configure the same IP address and ports in your Jimi IoT / JC371 device settings.
+If UDP is blocked in network:
+- Set JT1078_UDP_PORT=0
+- Keep JT1078_TCP_PORT=7001
+- Set JT1078_PREFER_TCP=1
 
 ---
 
-## Project structure
+## 10. Running with PM2 (Production)
 
-```
-.
-├── server.js               # Express + WebSocket hub + wires up JT808 & JT1078 servers
-├── package.json
-├── jt808/
-│   ├── codec.js            # Frame unescaping, XOR checksum, BCD time helpers
-│   ├── jt808-server.js     # TCP listener, frame extraction, dispatch
-│   └── handlers.js         # Message handlers (0x0002, 0x0102, 0x0200) + 0x8001 encoder
-├── jt1078/
-│   └── jt1078-udp.js       # UDP listener, JT/T 1078 packet parser
-└── web/
-    ├── index.html          # Dashboard UI
-    └── app.js              # WebSocket client, DOM updates
+Install PM2 globally:
+
+```bash
+npm install -g pm2
 ```
 
----
+Start app:
 
-## What's implemented
+```bash
+pm2 start server.js --name FleetManagement
+```
 
-### JT/T 808 TCP gateway (GPS)
+Restart with updated env:
 
-| Message ID | Direction | Handled |
-|---|---|---|
-| `0x0002` Heartbeat | Device → Server | ✅ Reply `0x8001` success |
-| `0x0102` Authentication | Device → Server | ✅ Reply `0x8001` success (accept-all) |
-| `0x0200` Location report | Device → Server | ✅ Parse GPS fields + TLVs; broadcast to UI; reply `0x8001` |
+```bash
+pm2 restart FleetManagement --update-env
+```
 
-**Protocol details:**
-- Frame delimiters: `0x7E … 0x7E`
-- Unescape: `0x7D 0x01` → `0x7D`, `0x7D 0x02` → `0x7E`
-- Checksum: XOR over header + body (verified on receive, applied on send)
-- Header: v2019 layout — msgId(2) + attr(2) + protoVer(1) + deviceId(10) + msgSeq(2)
+Read logs:
 
-### JT/T 1078 UDP receiver (video packets)
-
-- Identifies packets by header magic `0x30 0x31 0x63 0x64` ("01cd").
-- Extracts: sequence number, BCD[6] device ID, logical channel, payload type, subpacket flag, body length, data body.
-- Reassembles fragmented video packets and starts FFmpeg with codec auto-detection, then broadcasts FLV to the browser over WebSocket.
-- Broadcasts packet metadata (device, channel, payload type, size) to the web dashboard over WebSocket.
-
-### Web dashboard
-
-- Real-time GPS: device ID, UTC time, lat/lng, speed, heading, altitude, ACC status, GPS fix.
-- GPS history log (last 20 entries).
-- Video packet log (device, channel, type, byte size).
-- WebSocket connection indicator.
+```bash
+pm2 logs FleetManagement --lines 200
+```
 
 ---
 
-## Limitations & next steps
+## 11. API Endpoints
 
-### Current limitations
+- GET /api/devices
+  - List known JT808 sessions and status
+- GET /api/video/streams
+  - Per-device/per-channel stream stats
+- POST /api/video/:deviceId/start
+  - Send 0x9101 start for channels
+- POST /api/video/:deviceId/stop
+  - Send 0x9102 stop for channels
 
-1. **Video is not decoded or played back.** The JT/T 1078 receiver captures and logs raw UDP packets but does not reassemble H.264/H.265 frames or deliver a playable stream to the browser.
-2. **No device registration (0x0100).** Authentication is accept-all; no auth-code database is maintained.
-3. **No persistence.** GPS history is in-memory only and lost on restart.
-4. **Single-server, single-process.** Not suitable for production scale.
+Example start request body:
 
-### Recommended next steps for live video playback
-
-| Approach | Latency | Complexity |
-|---|---|---|
-| **WebRTC** via mediasoup / Janus | ~100–300 ms | High |
-| **FLV over WebSocket** (flv.js) — H.264 only | ~500 ms–1 s | Medium |
-| **HLS** via FFmpeg segmenter | 2–10 s | Low |
-
-The recommended path for JC371 is:
-1. Reassemble JT/T 1078 sub-packets into complete NAL units.
-2. Wrap H.264 in an FLV container and push over WebSocket → play with **flv.js** in browser.
-3. For H.265 or lower latency: transcode to H.264 WebRTC with GStreamer/FFmpeg + mediasoup.
-
-### Other improvements
-- Persist GPS tracks to a database (PostgreSQL / Redis).
-- Implement `0x9101` downlink command to start/stop live video on demand.
-- Implement `0x0100` registration with auth-code management.
-- Add authentication to the web UI.
-- Add a proper map view (Leaflet / Google Maps).
+```json
+{
+  "channels": [1, 2],
+  "dataType": 1,
+  "streamType": 0
+}
+```
 
 ---
 
-## License
+## 12. First-Time Testing Flow
+
+1. Start server.
+2. Open browser at http://localhost:3008.
+3. Wait for device auth and location updates.
+4. Confirm GPS block is updating.
+5. Click Start Video.
+6. Confirm logs show 0x9101 accepted.
+7. Confirm JT1078 packets and FRAME COMPLETE logs.
+8. Confirm FFmpeg started for channel 1/2.
+9. Confirm video appears in both players.
+
+---
+
+## 13. Troubleshooting
+
+## A) Video blank but packets are coming
+- Set VIDEO_CODEC=h264 and restart.
+- Confirm ffmpeg is installed and reachable:
+
+```bash
+ffmpeg -version
+```
+
+- Confirm browser supports MSE and flv.js.
+
+## B) 0x9101 accepted but no video packets
+- Network/firewall issue likely.
+- Open UDP/TCP 7001.
+- Try TCP-only mode:
+  - JT1078_UDP_PORT=0
+  - JT1078_PREFER_TCP=1
+
+## C) 0x9101 result is failure
+- Set REGISTER_ON_AUTH=1.
+- Set PUBLIC_IP or VIDEO_SERVER_IP correctly.
+- If needed set JT808_9101_ALLOW_ZERO_PORTS=0.
+
+## D) Frequent reconnects
+- Check mobile network quality.
+- Keep TCP preferred if UDP unstable.
+- Keep pre-roll defaults unless memory pressure exists.
+
+---
+
+## 14. Fresher-Friendly Code Reading Order
+
+Read files in this order:
+1. server.js
+2. protocol-jt808/tcp-gateway.js
+3. protocol-jt808/message-handlers.js
+4. protocol-jt1078/tcp-stream-receiver.js and protocol-jt1078/udp-stream-receiver.js
+5. protocol-jt1078/frame-reassembler.js
+6. dashboard-web/dashboard-client.js
+
+This order matches runtime flow and is easiest for beginners.
+
+---
+
+## 15. Important Notes
+
+- This project stores runtime data in memory only.
+- It is a practical integration reference, not a complete fleet production platform.
+- Use reverse proxy, HTTPS, auth, and persistence for enterprise deployment.
+
+---
+
+## 16. License
 
 MIT
-
----
-
-## Troubleshooting
-
-### Device authenticates (0x0102) but does not send registration (0x0100)
-
-Some Jimi IoT / JC371 firmware versions skip the registration step and go straight to authentication.
-This causes `/api/devices` to show `registered:false`, and many firmwares will then reject the
-`0x9101` realtime A/V start command with `result=1 (failure)`.
-
-**Fix:** Set the `REGISTER_ON_AUTH=1` environment variable to infer registration from a successful auth.
-
-```bash
-REGISTER_ON_AUTH=1 npm start
-# or in PM2 ecosystem.config.js: env: { REGISTER_ON_AUTH: "1" }
-```
-
-When enabled, the server will log:
-```
-[JT808] REGISTER_ON_AUTH: inferring registration from auth { deviceId: '...' }
-```
-
----
-
-### 0x9101 realtime video start fails with result=1 (failure)
-
-1. **Set your public IP** so the device can reach the video server:
-
-   ```bash
-   PUBLIC_IP=1.2.3.4 npm start
-   # or set VIDEO_SERVER_IP=1.2.3.4 for a separate video server address
-   ```
-
-2. **Enable registration-from-auth** if the device skips 0x0100 (see above):
-
-   ```bash
-   REGISTER_ON_AUTH=1 PUBLIC_IP=1.2.3.4 npm start
-   ```
-
-3. **Restrict 0x9101 to non-zero port variants.** By default all six port combination variants
-   are tried, including those with `tcpPort=0` or `udpPort=0`. Some firmware rejects these.
-   To only send variants where both ports are non-zero (`var_both` and `pad_both`), set:
-
-   ```bash
-   JT808_9101_ALLOW_ZERO_PORTS=0 npm start
-   ```
-
-   The default value (`1`) preserves the original behaviour of trying all six variants."
-
----
-
-### Force TCP streaming (0x9101)
-
-Some SIM/mobile networks block outbound UDP, so the device can acknowledge `0x9101` successfully
-but never deliver video packets via UDP. If you verified TCP works (e.g. `tcpdump` shows packets on
-TCP 7001 but not UDP 7001), force TCP streaming:
-
-1. **Set UDP port to 0** so UDP-only variants are skipped automatically:
-
-   ```bash
-   JT1078_UDP_PORT=0 JT1078_TCP_PORT=7001 npm start
-   ```
-
-   With `JT1078_UDP_PORT=0` the server automatically removes `var_udp`/`pad_udp` from the
-   variant list and moves TCP variants to the front of the retry order.
-
-2. **Optionally set `JT1078_PREFER_TCP=1`** to force TCP-first ordering even when both ports
-   are non-zero (useful when the device incorrectly ACKs UDP variants):
-
-   ```bash
-   JT1078_PREFER_TCP=1 JT1078_TCP_PORT=7001 JT1078_UDP_PORT=0 npm start
-   ```
-
-3. **PM2 users** — update your `ecosystem.config.js` and restart:
-
-   ```js
-   env: {
-     JT1078_TCP_PORT: "7001",
-     JT1078_UDP_PORT: "0",
-     JT1078_PREFER_TCP: "1",
-   }
-   ```
-
-   ```bash
-   pm2 restart <id> --update-env
-   ```
-
-The server will log the computed `tcpPort`/`udpPort` and the final accepted variant so you can
-confirm the correct transport was selected:
-
-```
-[JT808] 0x9101 variants to try { ..., tcpPort: 7001, udpPort: 0, variantNames: ['var_tcp', 'pad_tcp', 'var_both', 'pad_both'] }
-[JT808] 0x9101 accepted { ..., variant: 'var_tcp', tcpPort: 7001, udpPort: 0 }
-```

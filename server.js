@@ -6,11 +6,11 @@ import { spawn } from "child_process";
 import { WebSocketServer, WebSocket } from "ws";
 import { fileURLToPath } from "url";
 
-import { startJT808Server } from "./jt808/jt808-server.js";
-import { startJT1078Udp }   from "./jt1078/jt1078-udp.js";
-import { startJT1078Tcp }   from "./jt1078/jt1078-tcp.js";
-import { encodeRealtimeAv9101, encodeRealtimeAvCtrl9102 } from "./jt808/handlers.js";
-import { JT1078Reassembler } from "./jt1078/reassembler.js";
+import { startJT808Server } from "./protocol-jt808/tcp-gateway.js";
+import { startJT1078Udp }   from "./protocol-jt1078/udp-stream-receiver.js";
+import { startJT1078Tcp }   from "./protocol-jt1078/tcp-stream-receiver.js";
+import { encodeRealtimeAv9101, encodeRealtimeAvCtrl9102 } from "./protocol-jt808/message-handlers.js";
+import { JT1078Reassembler } from "./protocol-jt1078/frame-reassembler.js";
 // flv-muxer removed
 
 const __filename = fileURLToPath(import.meta.url);
@@ -650,7 +650,7 @@ wssVideo.on("connection", (ws, req) => {
 
 // ── Static files ──────────────────────────────────────────────────────────────
 
-app.use(express.static(path.join(__dirname, "web")));
+app.use(express.static(path.join(__dirname, "dashboard-web")));
 
 // ── REST APIs ─────────────────────────────────────────────────────────────────
 
