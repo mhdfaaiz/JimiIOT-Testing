@@ -7,7 +7,7 @@ It supports:
 - JT/T 1078 over UDP/TCP for live video packets
 - Real-time web dashboard via WebSocket
 - Live video playback in browser using FLV over WebSocket
-- Audio+video request mode (0x9101 dataType=0) for microphone voice
+- Stable video-first mode (0x9101 dataType=1)
 
 This guide is written for freshers and explains everything from scratch.
 
@@ -238,14 +238,14 @@ Example start request body:
 ```json
 {
   "channels": [1, 2],
-  "dataType": 0,
+  "dataType": 1,
   "streamType": 0
 }
 ```
 
 Note:
-- `dataType: 0` requests audio+video from terminal.
-- `dataType: 1` requests video-only.
+- `dataType: 1` requests video-only (recommended stable mode).
+- `dataType: 0` requests audio+video, but this project currently does not provide a dedicated dual-input audio mux pipeline for all device audio codecs.
 
 ---
 
@@ -293,10 +293,9 @@ ffmpeg -version
 - Keep pre-roll defaults unless memory pressure exists.
 
 ## E) Video works but no voice
-- Ensure Start Video request uses `dataType: 0`.
-- Confirm browser tab and player are not muted.
-- Confirm device microphone/audio is enabled in terminal settings.
-- Server outputs FLV with AAC audio for browser compatibility.
+- This project currently runs a stable video-only live path by default (`dataType: 1`).
+- Device audio in JT1078 is commonly separate and codec-specific; it needs a dedicated audio decode/mux path to guarantee browser playback.
+- If you need full voice support, implement a dual-input ffmpeg pipeline (video pipe + audio pipe) based on your device audio codec (often G.711/G.726/AAC).
 
 ---
 

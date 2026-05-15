@@ -209,7 +209,7 @@ document.getElementById("startVideoBtn")?.addEventListener("click", () => {
   fetch(`/api/video/${encodeURIComponent(deviceId)}/start`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ channels: [1, 2], dataType: 0, streamType: 0 })
+    body:    JSON.stringify({ channels: [1, 2], dataType: 1, streamType: 0 })
   })
     .then((r) => r.json())
     .then((d) => {

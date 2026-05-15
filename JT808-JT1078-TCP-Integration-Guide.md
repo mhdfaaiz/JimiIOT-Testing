@@ -17,7 +17,7 @@ We need one server that can do all of these at the same time:
 - Reassemble fragmented media payloads
 - Decode/transcode via FFmpeg
 - Push playable FLV stream to browser
-- Request audio+video mode (`dataType=0`) to include microphone voice
+- Keep stable video-first mode (`dataType=1`) for reliable live playback
 
 ---
 
@@ -36,7 +36,7 @@ Used code:
 
 ## Step B: User triggers video start
 - Browser calls POST /api/video/:deviceId/start.
-- Default body uses `dataType: 0` (audio+video).
+- Default body uses `dataType: 1` (video-only, stable).
 - Server sends JT808 0x9101 variants (udp/tcp combinations).
 - Device responds with general response for 0x9101.
 - Server detects accepted variant and waits for media packets.
@@ -293,10 +293,9 @@ Problem: Stream appears and disappears
 - Prefer TCP and verify mobile uplink quality.
 
 Problem: Video works but no sound
-- Ensure start request uses `dataType=0`.
-- Ensure browser/player is not muted.
-- Confirm device microphone/audio is enabled.
-- Check FFmpeg logs for unsupported audio codec warnings.
+- Current stable path is video-only by default (`dataType=1`).
+- JT1078 audio is often separate and codec-specific (for example G.711/G.726).
+- To support voice reliably, add dedicated audio decode and dual-input mux to FFmpeg, then deliver browser-compatible audio track.
 
 ---
 

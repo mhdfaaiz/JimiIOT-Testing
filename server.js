@@ -452,8 +452,6 @@ function ensureVideoTranscoder(key, ch, frameData) {
     "-loglevel", "warning",
     "-fflags", "nobuffer",
     "-flags", "low_delay",
-    "-analyzeduration", "0",
-    "-probesize", "32",
     "-f", inputFormat,
     "-i", "pipe:0",
     "-c:v", "libx264",
@@ -462,10 +460,6 @@ function ensureVideoTranscoder(key, ch, frameData) {
     "-g", "10",
     "-keyint_min", "10",
     "-bf", "0",
-    "-c:a", "aac",
-    "-ar", "8000",
-    "-ac", "1",
-    "-b:a", "24k",
     "-f", "flv",
     "pipe:1"
   ]);
@@ -756,6 +750,10 @@ function updateVideoStats({ deviceId, channel, payloadType, dataBody }) {
 function handleJT1078Packet(packet) {
   updateVideoStats(packet);
 
+  // Keep reassembly strictly video-only. Mixing audio and video fragments on the
+  // same device:channel key can corrupt frame assembly and break decode.
+  if (!packet.payloadType.startsWith("video")) return;
+
   const frame = reassembler.push(packet);
   if(frame) console.log(`[Reassembler] FRAME COMPLETE ch=${frame.channel} size=${frame.data.length}`);
   if (!frame) return;
@@ -767,22 +765,6 @@ function handleJT1078Packet(packet) {
     ch = createVideoChannelState();
     state.videoChannels.set(key, ch);
   }
-
-  // Audio frames are now accepted and forwarded for muxed streams (e.g. MPEG-PS).
-  // For raw Annex-B video modes (h264/hevc), ffmpeg input is video-only, so audio
-  // payloads are ignored to avoid corrupting the decoder input.
-  if (frame.payloadType.startsWith("audio")) {
-    if (ch.inputFormatHint === "mpeg" && ch.ffmpeg && ch.ffmpeg.stdin && ch.ffmpeg.stdin.writable) {
-      try {
-        ch.ffmpeg.stdin.write(frame.data);
-      } catch (e) {
-        console.error("[FFmpeg] Audio stdin write error:", e);
-      }
-    }
-    return;
-  }
-
-  if (!frame.payloadType.startsWith("video")) return;
 
   ch.lastFrameLooksMpeg = looksLikeMpegPs(frame.data);
   ch.lastFrameHasAnnexB = hasAnnexBStartCode(frame.data);
@@ -932,7 +914,7 @@ const RESULT_FAILURE     = 1;
 const RESULT_MSG_ERROR   = 2;
 const RESULT_UNSUPPORTED = 3;
 
-async function startRealtimeVideoAuto({ deviceId, channels = [1, 2], dataType = 0, streamType = 0 }) {
+async function startRealtimeVideoAuto({ deviceId, channels = [1, 2], dataType = 1, streamType = 0 }) {
   const sess = resolveSession(deviceId);
   if (!sess?.socket || sess.socket.destroyed) {
     throw new Error(`No active JT808 session for device ${deviceId}`);
@@ -1068,7 +1050,7 @@ startJT808Server({
       if (process.env.AUTO_START_VIDEO === "1") {
         // Small delay so the auth ACK is flushed to the device before we push 0x9101
         setTimeout(() => {
-          startRealtimeVideoAuto({ deviceId, channels: [1, 2], dataType: 0, streamType: 0 })
+          startRealtimeVideoAuto({ deviceId, channels: [1, 2], dataType: 1, streamType: 0 })
             .catch((e) => console.log("[JT808] auto-start video failed", { deviceId, error: e?.message ?? String(e) }));
         }, 500);
       }
