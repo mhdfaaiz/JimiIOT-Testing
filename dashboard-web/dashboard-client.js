@@ -144,13 +144,13 @@ function initAudioPlayer(deviceId, channel) {
   audioWs.binaryType = "arraybuffer";
 
   audioWs.onopen  = () => {
-    _setAudioStatus(channel, "ready — click Unmute to hear");
-    const btn = document.getElementById(`audioBtn${channel}`);
+    _setAudioStatus(channel, "ready - click speaker button to hear");
+    const btn = document.getElementById(`speakerBtn${channel}`);
     if (btn) btn.disabled = false;
   };
   audioWs.onclose = () => {
     _setAudioStatus(channel, "disconnected");
-    const btn = document.getElementById(`audioBtn${channel}`);
+    const btn = document.getElementById(`speakerBtn${channel}`);
     if (btn) btn.disabled = true;
   };
   audioWs.onerror = () => _setAudioStatus(channel, "error");
@@ -214,12 +214,29 @@ function toggleAudioMute(deviceId, channel) {
   if (!player) return;
 
   player.muted = !player.muted;
-  const btn = document.getElementById(`audioBtn${channel}`);
-  if (btn) btn.textContent = player.muted ? "🔇 Unmute Audio" : "🔊 Mute Audio";
+  const btn = document.getElementById(`speakerBtn${channel}`);
+  if (btn) {
+    btn.textContent = player.muted ? "🔇 Speaker" : "🔊 Speaker";
+    btn.setAttribute("aria-pressed", player.muted ? "false" : "true");
+  }
 
   if (!player.muted) {
     _setAudioStatus(channel, "playing");
-    // Resume context if suspended (browsers suspend on inactivity)
+    // Resume or create context in the user gesture handler for autoplay policy compliance.
+    if (!player.audioCtx) {
+      try {
+        player.audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: AUDIO_SAMPLE_RATE });
+      } catch (e) {
+        console.warn("[audio] AudioContext create failed:", e);
+        _setAudioStatus(channel, "audio init failed");
+        player.muted = true;
+        if (btn) {
+          btn.textContent = "🔇 Speaker";
+          btn.setAttribute("aria-pressed", "false");
+        }
+        return;
+      }
+    }
     if (player.audioCtx?.state === "suspended") player.audioCtx.resume().catch(() => {});
     player.markScheduleReset?.();
   } else {
@@ -227,6 +244,47 @@ function toggleAudioMute(deviceId, channel) {
     player.markScheduleReset?.();
   }
 }
+
+function toggleVideoView(channel) {
+  const shell = document.getElementById(`videoShell${channel}`);
+  const btn = document.getElementById(`viewBtn${channel}`);
+  if (!shell || !btn) return;
+
+  const isFs = document.fullscreenElement === shell;
+  const isMax = shell.classList.contains("maximized");
+
+  if (isFs || isMax) {
+    if (isFs) {
+      document.exitFullscreen?.().catch(() => {});
+    }
+    shell.classList.remove("maximized");
+    btn.textContent = "⤢ Maximize";
+    return;
+  }
+
+  if (shell.requestFullscreen) {
+    shell.requestFullscreen().then(() => {
+      btn.textContent = "🗗 Minimize";
+    }).catch(() => {
+      shell.classList.add("maximized");
+      btn.textContent = "🗗 Minimize";
+    });
+    return;
+  }
+
+  shell.classList.add("maximized");
+  btn.textContent = "🗗 Minimize";
+}
+
+document.addEventListener("fullscreenchange", () => {
+  [1, 2].forEach((ch) => {
+    const shell = document.getElementById(`videoShell${ch}`);
+    const btn = document.getElementById(`viewBtn${ch}`);
+    if (!shell || !btn) return;
+    const active = document.fullscreenElement === shell || shell.classList.contains("maximized");
+    btn.textContent = active ? "🗗 Minimize" : "⤢ Maximize";
+  });
+});
 
 function _setAudioStatus(channel, text) {
   const el = document.getElementById(`audioStatus${channel}`);
@@ -358,13 +416,17 @@ document.getElementById("startVideoBtn")?.addEventListener("click", () => {
     }));
 });
 
-/* ─── Audio button wiring ────────────────────────────────────────────────── */
+/* ─── In-video control wiring ────────────────────────────────────────────── */
 [1, 2].forEach((ch) => {
-  document.getElementById(`audioBtn${ch}`)?.addEventListener("click", () => {
+  document.getElementById(`speakerBtn${ch}`)?.addEventListener("click", () => {
     const deviceId = currentVideoDeviceId
                   || document.getElementById("gDevice")?.textContent?.trim();
     if (!deviceId || deviceId === "-") return;
     toggleAudioMute(deviceId, ch);
+  });
+
+  document.getElementById(`viewBtn${ch}`)?.addEventListener("click", () => {
+    toggleVideoView(ch);
   });
 });
 
