@@ -54,6 +54,7 @@ const state = {
   // "deviceId:channel" → { subs: Set<{ws}>, lastSps: Buffer|null, lastPps: Buffer|null }
   videoChannels:   new Map(),
   hlsChannels:     new Map(),   // "deviceId:channel" → hls channel state
+  recentPackets:   new Map(),   // "deviceId:channel" → Map<packetSig, seenAt>
   audioChannels:   new Map(),   // "deviceId:channel" → audio channel state
   clients:         new Set()    // dashboard WebSocket clients
 };
@@ -98,6 +99,7 @@ function ffmpegInputFormatForCodec(codec) {
 
 const PRE_ROLL_MAX_FRAMES = Math.max(10, Number(process.env.VIDEO_PREROLL_FRAMES ?? 40) || 40);
 const PRE_ROLL_MAX_BYTES = Math.max(256 * 1024, Number(process.env.VIDEO_PREROLL_BYTES ?? (2 * 1024 * 1024)) || (2 * 1024 * 1024));
+const JT1078_DEDUP_WINDOW_MS = Math.max(500, Number(process.env.JT1078_DEDUP_WINDOW_MS ?? 1500) || 1500);
 
 function createVideoChannelState() {
   return {
@@ -230,6 +232,26 @@ function disableHlsForChannels(deviceId, channels) {
     hls.enabled = false;
     stopHlsTranscoder(key, hls, "disabled");
   }
+}
+
+function isDuplicateJt1078Packet(packet) {
+  const key = `${canonicalId(packet.deviceId)}:${Number(packet.channel)}`;
+  const now = Date.now();
+  const sig = `${packet.seq}|${packet.subFlag}|${packet.payloadType}|${packet.dataBody?.length ?? 0}|${packet.timestampMs ?? 0}`;
+
+  let seen = state.recentPackets.get(key);
+  if (!seen) {
+    seen = new Map();
+    state.recentPackets.set(key, seen);
+  }
+
+  for (const [k, ts] of seen.entries()) {
+    if (now - ts > JT1078_DEDUP_WINDOW_MS) seen.delete(k);
+  }
+
+  if (seen.has(sig)) return true;
+  seen.set(sig, now);
+  return false;
 }
 
 // ── Audio channel helpers ─────────────────────────────────────────────────────
@@ -1176,6 +1198,8 @@ function updateVideoStats({ deviceId, channel, payloadType, dataBody }) {
 }
 
 function handleJT1078Packet(packet) {
+  if (isDuplicateJt1078Packet(packet)) return;
+
   updateVideoStats(packet);
 
   // Route audio to the dedicated audio pipeline; keep the video reassembler
@@ -1246,13 +1270,34 @@ function handleJT1078Packet(packet) {
 
   const hls = state.hlsChannels.get(key);
   if (hls?.enabled) {
+    if (!hls.ffmpeg && !hls.ffmpegStarting && codecForNormalize) {
+      const hlsReady = isFrameBootstrapReady(ch, normalizedFrame, codecForNormalize, frame.payloadType);
+      if (!hlsReady) {
+        const now = Date.now();
+        if (!hls.waitingForBootstrapSince || now - hls.waitingForBootstrapSince > 5000) {
+          hls.waitingForBootstrapSince = now;
+          console.log(`[HLS] ${key} waiting for keyframe/parameter sets`, {
+            codec: codecForNormalize,
+            payloadType: frame.payloadType
+          });
+        }
+      } else {
+        hls.waitingForBootstrapSince = 0;
+      }
+    }
+
     if (hls.decoderErrorPendingRestart && hls.ffmpeg && isKeyframe) {
       hls.decoderErrorPendingRestart = false;
       stopHlsTranscoder(key, hls, "decoder_error_keyframe_restart");
-      return;
     }
 
-    ensureHlsTranscoder(key, hls, ch, normalizedFrame);
+    if (!hls.ffmpeg && !hls.ffmpegStarting && codecForNormalize) {
+      const hlsReady = isFrameBootstrapReady(ch, normalizedFrame, codecForNormalize, frame.payloadType);
+      if (hlsReady) ensureHlsTranscoder(key, hls, ch, normalizedFrame);
+    } else {
+      ensureHlsTranscoder(key, hls, ch, normalizedFrame);
+    }
+
     if (hls.ffmpeg && hls.ffmpeg.stdin && hls.ffmpeg.stdin.writable) {
       try {
         if (!flushPreRollToHls(key, hls, ch)) {
