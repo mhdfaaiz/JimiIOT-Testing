@@ -165,6 +165,8 @@ function createHlsChannelState(deviceId, channel) {
     ffmpegStarting: false,
     ffmpegKilled: false,
     ffmpegHasOutput: false,
+    decoderErrorPendingRestart: false,
+    lastDecoderErrorAt: 0,
     outputDir,
     playlistPath,
     playlistUrl: hlsPlaylistRelativePath(deviceId, channel),
@@ -193,7 +195,17 @@ function stopHlsTranscoder(key, hls, reason = "stop") {
   }
   hls.ffmpegStarting = false;
   hls.ffmpegHasOutput = false;
+  hls.decoderErrorPendingRestart = false;
   hls.preRollNeedsFlush = false;
+}
+
+function isVideoChannelRecentlyActive(deviceId, channel, withinMs = 10000) {
+  const cid = canonicalId(deviceId);
+  const per = state.videoStats.get(cid)?.perChannel;
+  if (!per) return false;
+  const cs = per.get(Number(channel));
+  if (!cs?.lastTs) return false;
+  return (Date.now() - cs.lastTs) <= withinMs;
 }
 
 function enableHlsForChannels(deviceId, channels) {
@@ -807,7 +819,12 @@ function ensureHlsTranscoder(key, hls, ch, frameData) {
 
   ff.stderr.on("data", (data) => {
     const text = data.toString().trim();
-    if (text) console.error(`[HLS] ${key} error:`, text);
+    if (!text) return;
+    console.error(`[HLS] ${key} error:`, text);
+    if (isLikelyDecoderError(text)) {
+      hls.decoderErrorPendingRestart = true;
+      hls.lastDecoderErrorAt = Date.now();
+    }
   });
 
   ff.on("close", (code) => {
@@ -816,6 +833,7 @@ function ensureHlsTranscoder(key, hls, ch, frameData) {
       state.hlsChannels.get(key).ffmpeg = null;
     }
     hls.ffmpegStarting = false;
+    hls.ffmpegHasOutput = false;
     const wasKilled = !!hls.ffmpegKilled;
     hls.ffmpegKilled = false;
     if (!wasKilled && hls.enabled) {
@@ -1069,16 +1087,27 @@ app.post("/api/hls/:deviceId/start", async (req, res) => {
   const channels = Array.isArray(req.body?.channels) ? req.body.channels : [1];
   const streamType = req.body?.streamType != null ? Number(req.body.streamType) : 0;
   const dataType = req.body?.dataType != null ? Number(req.body.dataType) : 1;
+  const startDeviceStreamParam = req.body?.startDeviceStream;
 
   try {
     const urls = enableHlsForChannels(deviceId, channels);
-    const jt808 = await startRealtimeVideoAuto({ deviceId, channels, dataType, streamType });
+
+    const shouldStartDeviceStream = typeof startDeviceStreamParam === "boolean"
+      ? startDeviceStreamParam
+      : channels.some((c) => !isVideoChannelRecentlyActive(deviceId, Number(c), 10000));
+
+    let jt808 = [];
+    if (shouldStartDeviceStream) {
+      jt808 = await startRealtimeVideoAuto({ deviceId, channels, dataType, streamType });
+    }
+
     res.json({
       ok: true,
       deviceId,
       channels: channels.map((c) => Number(c)),
       dataType,
       streamType,
+      startDeviceStream: shouldStartDeviceStream,
       hls: urls,
       jt808
     });
@@ -1217,6 +1246,12 @@ function handleJT1078Packet(packet) {
 
   const hls = state.hlsChannels.get(key);
   if (hls?.enabled) {
+    if (hls.decoderErrorPendingRestart && hls.ffmpeg && isKeyframe) {
+      hls.decoderErrorPendingRestart = false;
+      stopHlsTranscoder(key, hls, "decoder_error_keyframe_restart");
+      return;
+    }
+
     ensureHlsTranscoder(key, hls, ch, normalizedFrame);
     if (hls.ffmpeg && hls.ffmpeg.stdin && hls.ffmpeg.stdin.writable) {
       try {
