@@ -52,4 +52,13 @@ export class JT1078Reassembler {
         return null;
     }
   }
+
+  /**
+   * Reset pending fragment state for one channel.
+   * Useful when stream continuity is broken and we want to drop stale fragments.
+   */
+  resetChannel(deviceId, channel) {
+    const key = `${deviceId}:${channel}`;
+    this._pending.delete(key);
+  }
 }

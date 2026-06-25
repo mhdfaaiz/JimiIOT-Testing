@@ -100,6 +100,9 @@ function ffmpegInputFormatForCodec(codec) {
 const PRE_ROLL_MAX_FRAMES = Math.max(10, Number(process.env.VIDEO_PREROLL_FRAMES ?? 40) || 40);
 const PRE_ROLL_MAX_BYTES = Math.max(256 * 1024, Number(process.env.VIDEO_PREROLL_BYTES ?? (2 * 1024 * 1024)) || (2 * 1024 * 1024));
 const JT1078_DEDUP_WINDOW_MS = Math.max(500, Number(process.env.JT1078_DEDUP_WINDOW_MS ?? 1500) || 1500);
+const VIDEO_VARIANT_LOCK_MS = Math.max(10000, Number(process.env.VIDEO_VARIANT_LOCK_MS ?? 60000) || 60000);
+const VIDEO_P_ONLY_WATCHDOG_MS = Math.max(3000, Number(process.env.VIDEO_P_ONLY_WATCHDOG_MS ?? 5000) || 5000);
+const VIDEO_P_ONLY_RESTART_COOLDOWN_MS = Math.max(5000, Number(process.env.VIDEO_P_ONLY_RESTART_COOLDOWN_MS ?? 15000) || 15000);
 
 function createVideoChannelState() {
   return {
@@ -120,6 +123,9 @@ function createVideoChannelState() {
     lastFrameHasAnnexB: false,
     decoderErrorPendingRestart: false,
     lastDecoderErrorAt: 0,
+    pOnlySince: 0,
+    lastIdrAt: 0,
+    lastPOnlyRecoveryAt: 0,
     preRollFrames: [],
     preRollBytes: 0,
     preRollNeedsFlush: false,
@@ -208,6 +214,33 @@ function isVideoChannelRecentlyActive(deviceId, channel, withinMs = 10000) {
   const cs = per.get(Number(channel));
   if (!cs?.lastTs) return false;
   return (Date.now() - cs.lastTs) <= withinMs;
+}
+
+function getVariantLock(sess, channel) {
+  if (!sess?.videoVariantLocks) return null;
+  return sess.videoVariantLocks.get(Number(channel)) ?? null;
+}
+
+function setVariantLock(sess, channel, variant, streamSeen = false) {
+  if (!sess) return;
+  if (!sess.videoVariantLocks) sess.videoVariantLocks = new Map();
+  const now = Date.now();
+  sess.videoVariantLocks.set(Number(channel), {
+    variant: { ...variant },
+    lockedUntil: now + VIDEO_VARIANT_LOCK_MS,
+    streamSeen: !!streamSeen,
+    updatedAt: now
+  });
+}
+
+function markVariantStreamSeen(deviceId, channel) {
+  const sess = resolveSession(deviceId);
+  if (!sess?.videoVariantLocks) return;
+  const lock = sess.videoVariantLocks.get(Number(channel));
+  if (!lock) return;
+  lock.streamSeen = true;
+  lock.lockedUntil = Date.now() + VIDEO_VARIANT_LOCK_MS;
+  lock.updatedAt = Date.now();
 }
 
 function enableHlsForChannels(deviceId, channels) {
@@ -886,6 +919,7 @@ function getOrInitSession(deviceId, socket) {
       nextSeq:        1,
       registered:     false,
       authenticated:  false,
+      videoVariantLocks: new Map(),
       lastGeneralResponseByMsgId: new Map(),
       pendingByReplySeq:          new Map()
     };
@@ -1231,6 +1265,39 @@ function handleJT1078Packet(packet) {
   const normalizedFrame = codecForNormalize ? normalizeFrameForCodec(ch, frame.data, codecForNormalize) : frame.data;
   const nalState = codecForNormalize ? inspectFrameNalState(normalizedFrame, codecForNormalize) : { hasKeyframe: false };
   const isKeyframe = frame.payloadType === "video-I" || !!nalState.hasKeyframe;
+  const now = Date.now();
+
+  markVariantStreamSeen(frame.deviceId, frame.channel);
+  if (isKeyframe) {
+    ch.lastIdrAt = now;
+    ch.pOnlySince = 0;
+    console.log(`[Video] ${key} keyframe accepted`, { payloadType: frame.payloadType, codec: codecForNormalize ?? "unknown" });
+  } else if (!ch.pOnlySince) {
+    ch.pOnlySince = now;
+  }
+
+  if (ch.pOnlySince && !isKeyframe && (now - ch.pOnlySince > VIDEO_P_ONLY_WATCHDOG_MS) && (now - ch.lastPOnlyRecoveryAt > VIDEO_P_ONLY_RESTART_COOLDOWN_MS)) {
+    ch.lastPOnlyRecoveryAt = now;
+    console.warn("[Video] P-only watchdog triggered", {
+      key,
+      durationMs: now - ch.pOnlySince,
+      payloadType: frame.payloadType
+    });
+
+    reassembler.resetChannel(frame.deviceId, frame.channel);
+    if (ch.ffmpeg) killTranscoderForRestart(key, ch, "p_only_watchdog");
+
+    const hlsWatch = state.hlsChannels.get(key);
+    if (hlsWatch?.ffmpeg) {
+      hlsWatch.decoderErrorPendingRestart = false;
+      stopHlsTranscoder(key, hlsWatch, "p_only_watchdog");
+    }
+
+    setTimeout(() => {
+      startRealtimeVideoAuto({ deviceId: frame.deviceId, channels: [frame.channel], dataType: 1, streamType: 0 })
+        .catch((e) => console.log("[JT808] watchdog restart failed", { key, error: e?.message ?? String(e) }));
+    }, 400);
+  }
 
   pushPreRollFrame(ch, normalizedFrame, isKeyframe);
 
@@ -1437,9 +1504,23 @@ async function startRealtimeVideoAuto({ deviceId, channels = [1, 2], dataType = 
   const results  = [];
 
   for (const ch of channels) {
-    let channelOk = false;
+    const channelNum = Number(ch);
+    const now = Date.now();
+    const locked = getVariantLock(sess, channelNum);
+    if (locked && locked.lockedUntil > now && locked.streamSeen && isVideoChannelRecentlyActive(deviceId, channelNum, 10000)) {
+      results.push({ channel: channelNum, variant: locked.variant.name, status: "already_active_locked" });
+      console.log("[JT808] 0x9101 skipped due active variant lock", { deviceId, channel: channelNum, variant: locked.variant.name });
+      continue;
+    }
 
-    for (const v of variants) {
+    let channelOk = false;
+    let variantsForChannel = variants;
+    if (locked && locked.lockedUntil > now) {
+      variantsForChannel = [locked.variant];
+      console.log("[JT808] 0x9101 using locked variant", { deviceId, channel: channelNum, variant: locked.variant.name, lockedUntil: locked.lockedUntil });
+    }
+
+    for (const v of variantsForChannel) {
       console.log("[JT808] 0x9101 trying variant", { deviceId, channel: Number(ch), variant: v.name, tcpPort: v.tcpPort, udpPort: v.udpPort, pad21: v.pad21 });
       const replySeq = send9101Variant(sess, {
         deviceId,
@@ -1474,6 +1555,7 @@ async function startRealtimeVideoAuto({ deviceId, channels = [1, 2], dataType = 
           continue;
         }
         console.log("[JT808] 0x9101 accepted", { deviceId, channel: Number(ch), variant: v.name, tcpPort: v.tcpPort, udpPort: v.udpPort });
+        setVariantLock(sess, channelNum, v, isVideoChannelRecentlyActive(deviceId, channelNum, 5000));
         channelOk = true;
         break;
       }
@@ -1576,6 +1658,7 @@ startJT808Server({
         p.resolve({ ok: false, timeout: true, closed: true });
       }
       sess.pendingByReplySeq.clear();
+      sess.videoVariantLocks?.clear?.();
     }
     console.log("[JT808] device disconnected", { deviceId });
   },
