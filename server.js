@@ -2,6 +2,7 @@ import express from "express";
 import http from "http";
 import path from "path";
 import os from "os";
+import fs from "fs";
 import { spawn } from "child_process";
 import { WebSocketServer, WebSocket } from "ws";
 import { fileURLToPath } from "url";
@@ -15,6 +16,9 @@ import { JT1078Reassembler } from "./protocol-jt1078/frame-reassembler.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
+const HLS_ROOT_DIR = path.join(__dirname, "hls-output");
+
+fs.mkdirSync(HLS_ROOT_DIR, { recursive: true });
 
 const app    = express();
 app.use(express.json());
@@ -49,6 +53,7 @@ const state = {
   sessionsByShortId: new Map(), // canonical 12-char deviceId → session  (alias index)
   // "deviceId:channel" → { subs: Set<{ws}>, lastSps: Buffer|null, lastPps: Buffer|null }
   videoChannels:   new Map(),
+  hlsChannels:     new Map(),   // "deviceId:channel" → hls channel state
   audioChannels:   new Map(),   // "deviceId:channel" → audio channel state
   clients:         new Set()    // dashboard WebSocket clients
 };
@@ -120,6 +125,99 @@ function createVideoChannelState() {
     lastSps: null,
     lastPps: null
   };
+}
+
+function hlsChannelKey(deviceId, channel) {
+  return `${canonicalId(deviceId)}:${Number(channel)}`;
+}
+
+function hlsFolderName(deviceId, channel) {
+  return `${canonicalId(deviceId)}_ch${Number(channel)}`;
+}
+
+function hlsPlaylistRelativePath(deviceId, channel) {
+  return `/hls/${hlsFolderName(deviceId, channel)}/index.m3u8`;
+}
+
+function clearDirectoryFilesSafe(dirPath) {
+  if (!fs.existsSync(dirPath)) return;
+  for (const name of fs.readdirSync(dirPath)) {
+    const filePath = path.join(dirPath, name);
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.isFile()) fs.unlinkSync(filePath);
+    } catch {
+      // best-effort cleanup
+    }
+  }
+}
+
+function createHlsChannelState(deviceId, channel) {
+  const folder = hlsFolderName(deviceId, channel);
+  const outputDir = path.join(HLS_ROOT_DIR, folder);
+  const playlistPath = path.join(outputDir, "index.m3u8");
+
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  return {
+    enabled: false,
+    ffmpeg: null,
+    ffmpegStarting: false,
+    ffmpegKilled: false,
+    ffmpegHasOutput: false,
+    outputDir,
+    playlistPath,
+    playlistUrl: hlsPlaylistRelativePath(deviceId, channel),
+    preRollNeedsFlush: false,
+    waitingForBootstrapSince: 0
+  };
+}
+
+function getOrCreateHlsChannel(deviceId, channel) {
+  const key = hlsChannelKey(deviceId, channel);
+  let hls = state.hlsChannels.get(key);
+  if (!hls) {
+    hls = createHlsChannelState(deviceId, channel);
+    state.hlsChannels.set(key, hls);
+  }
+  return { key, hls };
+}
+
+function stopHlsTranscoder(key, hls, reason = "stop") {
+  if (!hls) return;
+  hls.ffmpegKilled = true;
+  if (hls.ffmpeg) {
+    console.log(`[HLS] stopping transcoder for ${key}`, { reason });
+    try { hls.ffmpeg.kill("SIGKILL"); } catch {}
+    hls.ffmpeg = null;
+  }
+  hls.ffmpegStarting = false;
+  hls.ffmpegHasOutput = false;
+  hls.preRollNeedsFlush = false;
+}
+
+function enableHlsForChannels(deviceId, channels) {
+  const urls = [];
+  for (const ch of channels) {
+    const { key, hls } = getOrCreateHlsChannel(deviceId, Number(ch));
+    hls.enabled = true;
+    hls.ffmpegKilled = false;
+    fs.mkdirSync(hls.outputDir, { recursive: true });
+    clearDirectoryFilesSafe(hls.outputDir);
+    console.log("[HLS] enabled", { key, playlistUrl: hls.playlistUrl });
+    urls.push({ channel: Number(ch), key, playlistUrl: hls.playlistUrl });
+  }
+  return urls;
+}
+
+function disableHlsForChannels(deviceId, channels) {
+  for (const ch of channels) {
+    const key = hlsChannelKey(deviceId, Number(ch));
+    const hls = state.hlsChannels.get(key);
+    if (!hls) continue;
+    hls.enabled = false;
+    stopHlsTranscoder(key, hls, "disabled");
+  }
 }
 
 // ── Audio channel helpers ─────────────────────────────────────────────────────
@@ -646,6 +744,86 @@ function ensureVideoTranscoder(key, ch, frameData) {
   });
 }
 
+function flushPreRollToHls(key, hls, ch) {
+  if (!hls.ffmpeg || !hls.ffmpeg.stdin || !hls.ffmpeg.stdin.writable) return false;
+  if (!hls.preRollNeedsFlush) return false;
+
+  let wrote = false;
+  for (const frame of ch.preRollFrames) {
+    try {
+      hls.ffmpeg.stdin.write(frame);
+      wrote = true;
+    } catch (e) {
+      console.error("[HLS] pre-roll write error:", e);
+      break;
+    }
+  }
+  hls.preRollNeedsFlush = false;
+  if (wrote) {
+    console.log(`[HLS] ${key} pre-roll flushed`, { frames: ch.preRollFrames.length, bytes: ch.preRollBytes });
+  }
+  return wrote;
+}
+
+function ensureHlsTranscoder(key, hls, ch, frameData) {
+  if (!hls?.enabled) return;
+  if (hls.ffmpeg || hls.ffmpegStarting) return;
+
+  setInputHintIfMissing(ch, frameData);
+
+  const inputFormat = ch.inputFormatHint ?? "h264";
+  hls.ffmpegStarting = true;
+  hls.ffmpegKilled = false;
+  hls.ffmpegHasOutput = false;
+  hls.preRollNeedsFlush = true;
+
+  // Start clean playlist/segments for each HLS start request.
+  clearDirectoryFilesSafe(hls.outputDir);
+
+  console.log(`[HLS] starting transcoder for ${key}`, { inputFormat, playlistPath: hls.playlistPath });
+  hls.ffmpeg = spawn("ffmpeg", [
+    "-hide_banner",
+    "-loglevel", "warning",
+    "-fflags", "nobuffer",
+    "-flags", "low_delay",
+    "-f", inputFormat,
+    "-i", "pipe:0",
+    "-an",
+    "-c:v", "libx264",
+    "-preset", "ultrafast",
+    "-tune", "zerolatency",
+    "-g", "25",
+    "-keyint_min", "25",
+    "-sc_threshold", "0",
+    "-hls_time", "1",
+    "-hls_list_size", "6",
+    "-hls_flags", "delete_segments+append_list+omit_endlist+independent_segments",
+    "-hls_segment_filename", path.join(hls.outputDir, "seg_%06d.ts"),
+    "-f", "hls",
+    hls.playlistPath
+  ]);
+
+  const ff = hls.ffmpeg;
+
+  ff.stderr.on("data", (data) => {
+    const text = data.toString().trim();
+    if (text) console.error(`[HLS] ${key} error:`, text);
+  });
+
+  ff.on("close", (code) => {
+    console.log(`[HLS] ${key} transcoder exited`, { code });
+    if (state.hlsChannels.get(key)?.ffmpeg === ff) {
+      state.hlsChannels.get(key).ffmpeg = null;
+    }
+    hls.ffmpegStarting = false;
+    const wasKilled = !!hls.ffmpegKilled;
+    hls.ffmpegKilled = false;
+    if (!wasKilled && hls.enabled) {
+      console.log(`[HLS] ${key} will auto-restart on next frame`);
+    }
+  });
+}
+
 function localIpGuess() {
   if (process.env.PUBLIC_IP) return process.env.PUBLIC_IP;
   const ifs = os.networkInterfaces();
@@ -811,6 +989,17 @@ wssAudio.on("connection", (ws, req) => {
 // ── Static files ──────────────────────────────────────────────────────────────
 
 app.use(express.static(path.join(__dirname, "dashboard-web")));
+app.use("/hls", express.static(HLS_ROOT_DIR, {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith(".m3u8")) {
+      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    } else if (filePath.endsWith(".ts")) {
+      res.setHeader("Content-Type", "video/mp2t");
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    }
+  }
+}));
 
 // ── REST APIs ─────────────────────────────────────────────────────────────────
 
@@ -873,6 +1062,61 @@ app.post("/api/video/:deviceId/stop", (req, res) => {
   } catch (e) {
     res.status(400).json({ ok: false, error: e?.message ?? String(e) });
   }
+});
+
+app.post("/api/hls/:deviceId/start", async (req, res) => {
+  const { deviceId } = req.params;
+  const channels = Array.isArray(req.body?.channels) ? req.body.channels : [1];
+  const streamType = req.body?.streamType != null ? Number(req.body.streamType) : 0;
+  const dataType = req.body?.dataType != null ? Number(req.body.dataType) : 1;
+
+  try {
+    const urls = enableHlsForChannels(deviceId, channels);
+    const jt808 = await startRealtimeVideoAuto({ deviceId, channels, dataType, streamType });
+    res.json({
+      ok: true,
+      deviceId,
+      channels: channels.map((c) => Number(c)),
+      dataType,
+      streamType,
+      hls: urls,
+      jt808
+    });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e?.message ?? String(e) });
+  }
+});
+
+app.post("/api/hls/:deviceId/stop", (req, res) => {
+  const { deviceId } = req.params;
+  const channels = Array.isArray(req.body?.channels) ? req.body.channels : [1];
+  try {
+    disableHlsForChannels(deviceId, channels);
+    res.json({ ok: true, deviceId, channels: channels.map((c) => Number(c)) });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e?.message ?? String(e) });
+  }
+});
+
+app.get("/api/hls/:deviceId/playlist", (req, res) => {
+  const { deviceId } = req.params;
+  const channel = Number(req.query.channel ?? 1);
+  const { key, hls } = getOrCreateHlsChannel(deviceId, channel);
+  const playlistExists = fs.existsSync(hls.playlistPath);
+  const protocol = req.headers["x-forwarded-proto"]?.toString().split(",")[0]?.trim() || req.protocol;
+  const host = req.get("host");
+  const absoluteUrl = `${protocol}://${host}${hls.playlistUrl}`;
+
+  res.json({
+    ok: true,
+    deviceId: canonicalId(deviceId),
+    channel,
+    key,
+    enabled: !!hls.enabled,
+    playlistReady: playlistExists,
+    playlistPath: hls.playlistUrl,
+    playlistUrl: absoluteUrl
+  });
 });
 
 // ── JT1078 packet handling ────────────────────────────────────────────────────
@@ -954,12 +1198,36 @@ function handleJT1078Packet(packet) {
           payloadType: frame.payloadType
         });
       }
+      const hls = state.hlsChannels.get(key);
+      if (hls?.enabled) {
+        if (!hls.waitingForBootstrapSince || now - hls.waitingForBootstrapSince > 5000) {
+          hls.waitingForBootstrapSince = now;
+          console.log(`[HLS] ${key} waiting for keyframe/parameter sets`, {
+            codec: codecForNormalize,
+            payloadType: frame.payloadType
+          });
+        }
+      }
       return;
     }
     ch.waitingForBootstrapSince = 0;
   }
 
   ensureVideoTranscoder(key, ch, normalizedFrame);
+
+  const hls = state.hlsChannels.get(key);
+  if (hls?.enabled) {
+    ensureHlsTranscoder(key, hls, ch, normalizedFrame);
+    if (hls.ffmpeg && hls.ffmpeg.stdin && hls.ffmpeg.stdin.writable) {
+      try {
+        if (!flushPreRollToHls(key, hls, ch)) {
+          hls.ffmpeg.stdin.write(normalizedFrame);
+        }
+      } catch (e) {
+        console.error("[HLS] stdin write error:", e);
+      }
+    }
+  }
 
   // Feed raw video data into FFmpeg transcoder
   if (ch.ffmpeg && ch.ffmpeg.stdin && ch.ffmpeg.stdin.writable) {
