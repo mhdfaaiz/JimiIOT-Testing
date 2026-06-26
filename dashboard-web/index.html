@@ -94,6 +94,7 @@
       background-color: #131318;
       color: #e4e1e9;
       overflow-x: hidden;
+      overflow-y: hidden;
       min-height: 100vh;
     }
 
@@ -147,7 +148,8 @@
     }
 
     .dashboard-grid {
-      height: calc(100vh - 112px);
+      height: 100%;
+      min-height: 0;
     }
 
     .shimmer {
@@ -226,8 +228,8 @@
 </aside>
 
 <!-- Main Content Canvas -->
-<main class="pl-20 pt-16 h-screen overflow-hidden">
-  <div class="p-container-padding h-full flex flex-col gap-card-gap">
+<main class="pl-20 mt-16 h-[calc(100vh-64px)] overflow-hidden">
+  <div class="p-container-padding h-full min-h-0 flex flex-col gap-card-gap">
 
     <!-- Dashboard Header -->
     <div class="flex flex-col md:flex-row md:items-end justify-between shrink-0">
@@ -296,7 +298,7 @@
       </div>
 
       <!-- Panel 2: Live Video Stream -->
-      <div class="md:col-span-5 md:row-span-12 glass-pane rounded-2xl p-6 flex flex-col gap-4">
+      <div class="md:col-span-5 md:row-span-12 glass-pane rounded-2xl p-6 flex flex-col gap-4 min-h-0">
         <div class="flex items-center justify-between">
           <h3 class="font-headline-md text-headline-md text-on-surface flex items-center gap-2">
             <span class="material-symbols-outlined text-secondary">videocam</span>
@@ -308,14 +310,14 @@
           </div>
         </div>
         <div class="space-y-4 flex-1 overflow-y-auto custom-scrollbar">
-          <div class="relative aspect-video rounded-xl overflow-hidden bg-black border border-glass-stroke group/cam">
+          <div class="relative aspect-video rounded-xl overflow-hidden bg-black border border-glass-stroke group/cam" id="videoShell1">
             <video id="videoEl1" autoplay muted playsinline></video>
             <div class="absolute top-2 left-2 px-2 py-1 bg-black/60 backdrop-blur-sm rounded text-[10px] font-bold text-white border border-white/20">CH_01 | PRIMARY</div>
             <div class="absolute inset-0 bg-primary/10 opacity-0 group-hover/cam:opacity-100 transition-opacity flex items-center justify-center cursor-pointer" id="viewBtn1">
               <span class="material-symbols-outlined text-white text-4xl">fullscreen</span>
             </div>
           </div>
-          <div class="relative aspect-video rounded-xl overflow-hidden bg-black border border-glass-stroke group/cam">
+          <div class="relative aspect-video rounded-xl overflow-hidden bg-black border border-glass-stroke group/cam" id="videoShell2">
             <video id="videoEl2" autoplay muted playsinline></video>
             <div class="absolute top-2 left-2 px-2 py-1 bg-black/60 backdrop-blur-sm rounded text-[10px] font-bold text-white border border-white/20">CH_02 | MACRO</div>
             <div class="absolute inset-0 bg-primary/10 opacity-0 group-hover/cam:opacity-100 transition-opacity flex items-center justify-center cursor-pointer" id="viewBtn2">
@@ -344,7 +346,7 @@
       </div>
 
       <!-- Panel 3: AI Plant Health -->
-      <div class="md:col-span-7 md:row-span-7 glass-pane rounded-2xl p-6 flex flex-col gap-4 overflow-hidden">
+      <div class="md:col-span-7 md:row-span-7 glass-pane rounded-2xl p-6 flex flex-col gap-4 overflow-hidden min-h-0">
         <div class="flex items-center justify-between shrink-0">
           <div class="flex items-center gap-4">
             <h3 class="font-headline-md text-headline-md text-on-surface flex items-center gap-2">
@@ -357,7 +359,7 @@
           <div class="flex items-center gap-3">
             <span class="text-label-md text-on-surface-variant">Live Analysis</span>
             <div class="w-12 h-6 bg-primary-container rounded-full relative p-1 cursor-pointer transition-all" id="liveAnalysisToggle">
-              <div class="w-4 h-4 bg-white rounded-full absolute right-1 transition-all"></div>
+              <div class="w-4 h-4 bg-white rounded-full absolute left-1 transition-all"></div>
             </div>
           </div>
         </div>
@@ -397,7 +399,42 @@
               </p>
             </div>
           </div>
-          <div class="w-full md:w-1/2 flex flex-col bg-black/20 rounded-xl border border-glass-stroke overflow-hidden">
+          <div class="w-full md:w-1/2 flex flex-col bg-black/20 rounded-xl border border-glass-stroke overflow-hidden min-h-0">
+            <div class="px-4 py-3 border-b border-glass-stroke bg-surface/30 space-y-3">
+              <div class="grid grid-cols-2 gap-2">
+                <button id="analyzePlantBtn" class="aether-gradient py-2 rounded-lg text-white text-xs font-bold tracking-wide disabled:opacity-40 disabled:cursor-not-allowed">CAPTURE ANALYSIS</button>
+                <select id="analysisInterval" class="bg-surface-container-low border border-glass-stroke rounded-lg px-2 py-2 text-xs text-on-surface">
+                  <option value="2000">Live: 2s</option>
+                  <option value="3000" selected>Live: 3s</option>
+                  <option value="5000">Live: 5s</option>
+                </select>
+              </div>
+              <div class="flex items-center justify-between gap-2 text-[11px] text-on-surface-variant">
+                <div class="flex items-center gap-3">
+                  <label class="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input type="radio" name="analysisChannel" value="1" checked class="w-3.5 h-3.5 bg-surface-container-low border-glass-stroke text-primary focus:ring-primary/40">
+                    <span>CH1</span>
+                  </label>
+                  <label class="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input type="radio" name="analysisChannel" value="2" class="w-3.5 h-3.5 bg-surface-container-low border-glass-stroke text-primary focus:ring-primary/40">
+                    <span>CH2</span>
+                  </label>
+                </div>
+                <label class="inline-flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" id="autoUpdateUI" checked class="w-3.5 h-3.5 bg-surface-container-low border-glass-stroke text-emerald-active focus:ring-emerald-active/40">
+                  <span>Auto update</span>
+                </label>
+              </div>
+              <div class="flex items-center justify-between text-[11px]">
+                <span class="text-on-surface-variant">Status</span>
+                <span id="analyzeStatus" class="text-primary font-semibold"></span>
+              </div>
+              <div id="aiNoData" class="text-[11px] text-on-surface-variant">No frame analyzed yet. Use CAPTURE ANALYSIS or enable Live Analysis.</div>
+              <div id="aiAnalysisResult" class="text-[11px] text-on-surface-variant space-y-1" style="display: none;">
+                <div class="flex justify-between"><span>Plant</span><span id="aiPlantName" class="text-on-surface font-semibold">-</span></div>
+                <div class="flex justify-between"><span>Scientific</span><span id="aiScientificName" class="text-on-surface font-semibold">-</span></div>
+              </div>
+            </div>
             <div class="bg-surface-container-high px-4 py-2 border-b border-glass-stroke">
               <span class="text-label-sm font-bold text-on-surface-variant uppercase tracking-tighter">Detailed Analysis Log</span>
             </div>

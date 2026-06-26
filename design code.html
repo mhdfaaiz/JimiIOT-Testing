@@ -1,0 +1,453 @@
+<!DOCTYPE html><html class="dark" lang="en" style=""><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>AETHERIS OS - Command Center</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&amp;family=Hanken+Grotesk:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;700&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@100..900&amp;family=JetBrains+Mono:wght@100..900&amp;family=Sora:wght@100..900&amp;display=swap" rel="stylesheet">
+<!-- Theme Configuration -->
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                "inverse-on-surface": "#303036",
+                "secondary": "#dcb8ff",
+                "on-primary-container": "#001e78",
+                "tertiary-container": "#4d8eff",
+                "on-tertiary-container": "#00285d",
+                "on-error-container": "#ffdad6",
+                "on-surface-variant": "#c5c5d5",
+                "glass-fill": "rgba(255, 255, 255, 0.04)",
+                "tertiary-fixed-dim": "#adc6ff",
+                "surface": "#131318",
+                "secondary-fixed-dim": "#dcb8ff",
+                "on-tertiary-fixed": "#001a42",
+                "surface-container-high": "#2a292f",
+                "on-primary-fixed": "#001356",
+                "error-container": "#93000a",
+                "on-secondary-container": "#d0a1ff",
+                "tertiary": "#adc6ff",
+                "background": "#131318",
+                "on-primary": "#002388",
+                "on-tertiary": "#002e6a",
+                "surface-container": "#1f1f25",
+                "emerald-active": "#10b981",
+                "inverse-surface": "#e4e1e9",
+                "deep-purple": "#764ba2",
+                "on-secondary-fixed": "#2c0051",
+                "iris-blue": "#3b82f6",
+                "outline": "#8f909e",
+                "on-error": "#690005",
+                "amber-warning": "#f59e0b",
+                "error": "#ffb4ab",
+                "on-background": "#e4e1e9",
+                "glass-stroke": "rgba(255, 255, 255, 0.08)",
+                "secondary-container": "#5c3187",
+                "outline-variant": "#444653",
+                "surface-tint": "#b9c3ff",
+                "primary": "#b9c3ff",
+                "on-tertiary-fixed-variant": "#004395",
+                "on-primary-fixed-variant": "#1f3ba6",
+                "secondary-fixed": "#f0dbff",
+                "surface-container-lowest": "#0e0e13",
+                "surface-variant": "#35343a",
+                "surface-dim": "#131318",
+                "on-surface": "#e4e1e9",
+                "critical-red": "#ef4444",
+                "tertiary-fixed": "#d8e2ff",
+                "primary-fixed": "#dde1ff",
+                "on-secondary-fixed-variant": "#5c3187",
+                "surface-bright": "#39383e",
+                "surface-container-low": "#1b1b20",
+                "primary-container": "#7189f6",
+                "surface-container-highest": "#35343a",
+                "primary-fixed-dim": "#b9c3ff",
+                "on-secondary": "#44176f",
+                "inverse-primary": "#3c55bf"
+            },
+            "borderRadius": {
+                "DEFAULT": "0.25rem",
+                "lg": "0.5rem",
+                "xl": "0.75rem",
+                "full": "9999px"
+            },
+            "spacing": {
+                "container-padding": "24px",
+                "section-margin": "32px",
+                "base": "4px",
+                "element-gap": "12px",
+                "card-gap": "16px"
+            },
+            "fontFamily": {
+                "headline-lg": ["Sora"],
+                "body-md": ["Hanken Grotesk"],
+                "label-md": ["JetBrains Mono"],
+                "headline-md": ["Sora"],
+                "headline-xl": ["Sora"]
+            }
+          }
+        }
+      }
+    </script>
+<style>
+        body {
+            background-color: #131318;
+            color: #e4e1e9;
+            overflow-x: hidden;
+            height: 100vh;
+        }
+
+        .glass-pane {
+            background: rgba(255, 255, 255, 0.04);
+            backdrop-filter: blur(24px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .glass-pane:hover {
+            transform: translateY(-4px);
+            border-color: rgba(185, 195, 255, 0.2);
+            box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+        }
+
+        .glow-orb {
+            box-shadow: 0 0 15px currentColor;
+        }
+
+        .aether-gradient {
+            background: linear-gradient(135deg, #7189f6 0%, #764ba2 100%);
+        }
+
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2);
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: rgba(185, 195, 255, 0.2);
+            border-radius: 10px;
+        }
+
+        .shimmer {
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent);
+            background-size: 200% 100%;
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+
+        .health-bar-gradient {
+            background: linear-gradient(to right, #ef4444, #f59e0b, #10b981);
+        }
+
+        @media (min-height: 800px) {
+            .dashboard-grid {
+                height: calc(100vh - 80px);
+            }
+        }
+    </style>
+</head>
+<body class="font-body-md selection:bg-primary selection:text-on-primary">
+<!-- Top Navigation Bar -->
+<header class="fixed top-0 w-full z-50 flex justify-between items-center px-container-padding h-16 bg-glass-fill backdrop-blur-[24px] border-b border-glass-stroke shadow-[0_0_20px_rgba(185,195,255,0.1)]">
+<div class="flex items-center gap-6">
+<h1 class="font-headline-md text-headline-md font-bold text-primary tracking-tight">AETHERIS OS</h1>
+<nav class="hidden md:flex gap-8 items-center h-full">
+<a class="text-primary border-b-2 border-primary pb-1 font-label-md transition-all" href="#">Telemetry</a>
+<a class="text-on-surface-variant hover:text-on-surface font-label-md transition-colors" href="#">Health</a>
+<a class="text-on-surface-variant hover:text-on-surface font-label-md transition-colors" href="#">Fleet</a>
+<a class="text-on-surface-variant hover:text-on-surface font-label-md transition-colors" href="#">Analysis</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<button class="p-2 text-on-surface-variant hover:bg-glass-stroke rounded-full transition-all scale-95 active:scale-90">
+<span class="material-symbols-outlined">settings</span>
+</button>
+<button class="p-2 text-on-surface-variant hover:bg-glass-stroke rounded-full transition-all scale-95 active:scale-90 relative">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute top-2 right-2 w-2 h-2 bg-critical-red rounded-full glow-orb" style="opacity: 0.7;"></span>
+</button>
+<div class="flex items-center gap-3 ml-2 border-l border-glass-stroke pl-4">
+<div class="text-right hidden sm:block">
+<p class="text-label-md font-bold text-on-surface leading-none">Admin_Node_01</p>
+<p class="text-label-sm text-primary opacity-70">Security Tier 4</p>
+</div>
+<span class="material-symbols-outlined text-primary scale-110">account_circle</span>
+</div>
+</div>
+</header>
+<!-- Side Navigation -->
+<aside class="fixed left-0 top-16 h-[calc(100vh-64px)] z-40 flex flex-col py-6 bg-glass-fill backdrop-blur-[24px] border-r border-glass-stroke w-20 hover:w-64 transition-all duration-500 overflow-hidden group">
+<div class="flex-1 space-y-4 px-4">
+<div class="flex items-center gap-4 p-3 bg-primary-container text-on-primary-container rounded-xl shadow-[0_0_15px_rgba(113,137,246,0.4)] cursor-pointer">
+<span class="material-symbols-outlined shrink-0" style="font-variation-settings: &quot;FILL&quot; 1;">dashboard</span>
+<span class="font-label-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">Dashboard</span>
+</div>
+<div class="flex items-center gap-4 p-3 text-on-surface-variant hover:text-primary transition-colors cursor-pointer group/item">
+<span class="material-symbols-outlined shrink-0 group-hover/item:translate-x-1 transition-transform">gps_fixed</span>
+<span class="font-label-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">Map Control</span>
+</div>
+<div class="flex items-center gap-4 p-3 text-on-surface-variant hover:text-primary transition-colors cursor-pointer group/item">
+<span class="material-symbols-outlined shrink-0 group-hover/item:translate-x-1 transition-transform">psychology</span>
+<span class="font-label-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">AI Health</span>
+</div>
+<div class="flex items-center gap-4 p-3 text-on-surface-variant hover:text-primary transition-colors cursor-pointer group/item">
+<span class="material-symbols-outlined shrink-0 group-hover/item:translate-x-1 transition-transform">insights</span>
+<span class="font-label-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">Analytics</span>
+</div>
+<div class="flex items-center gap-4 p-3 text-on-surface-variant hover:text-primary transition-colors cursor-pointer group/item">
+<span class="material-symbols-outlined shrink-0 group-hover/item:translate-x-1 transition-transform">terminal</span>
+<span class="font-label-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">System Logs</span>
+</div>
+</div>
+<div class="px-4 space-y-4 pt-6 border-t border-glass-stroke">
+<button class="w-full flex items-center gap-4 p-3 text-critical-red hover:bg-critical-red/10 rounded-xl transition-colors">
+<span class="material-symbols-outlined shrink-0">report</span>
+<span class="font-label-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">Emergency Stop</span>
+</button>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="pl-20 pt-16 h-screen overflow-hidden">
+<div class="p-container-padding h-full flex flex-col gap-card-gap">
+<!-- Dashboard Header -->
+<div class="flex flex-col md:flex-row md:items-end justify-between shrink-0">
+<div>
+<div class="flex items-center gap-2 text-primary mb-1">
+<span class="material-symbols-outlined text-body-lg">sensors</span>
+<span class="font-label-md uppercase tracking-widest text-[10px]">Real-Time Uplink Established</span>
+</div>
+<h2 class="font-headline-lg text-headline-lg text-on-surface flex items-center gap-3">
+                        🛰️ JC371 / JimiIoT — GPS Tracking &amp; Live Monitor
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-active/20 text-emerald-active border border-emerald-active/30">ONLINE</span>
+</h2>
+</div>
+<div class="flex gap-3 mt-4 md:mt-0">
+<div class="glass-pane px-4 py-2 rounded-xl flex items-center gap-3">
+<div class="w-2 h-2 rounded-full bg-emerald-active glow-orb animate-pulse" style="opacity: 0.7;"></div>
+<span class="text-label-md text-on-surface-variant">Lat: <span class="text-on-surface">34.0522</span></span>
+<span class="text-label-md text-on-surface-variant">Lng: <span class="text-on-surface">-118.2437</span></span>
+</div>
+</div>
+</div>
+<!-- Bento Grid Layout -->
+<div class="flex-1 grid grid-cols-1 md:grid-cols-12 grid-rows-6 md:grid-rows-12 gap-card-gap dashboard-grid"><!-- Panel 1: Live Location Tracker (Map) -->
+<div class="md:col-span-7 md:row-span-5 glass-pane rounded-2xl overflow-hidden flex flex-col relative group">
+<div class="absolute top-4 left-4 z-10 flex gap-2">
+<div class="bg-surface/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-glass-stroke flex items-center gap-2">
+<span class="material-symbols-outlined text-body-md text-primary">navigation</span>
+<span class="text-label-sm text-on-surface">SPEED: 42 KM/H</span>
+</div>
+<div class="bg-surface/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-glass-stroke flex items-center gap-2">
+<span class="material-symbols-outlined text-body-md text-iris-blue">satellite_alt</span>
+<span class="text-label-sm text-on-surface">SATS: 12</span>
+</div>
+</div>
+<div class="flex-1 relative bg-surface-container-low">
+<div class="absolute inset-0 bg-[#0b0c10]" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuCjuYyLz-jN15vxLfHODNzz4Q50p9xucFhNqnmDsfDuhvYXApVgzC8XN7vccdR-T5NPKhKI6yJGYc36nlrrAk3__75tDolWWc65Hx3W0UGxLsZdlmV7ukuwnEGg6RQINtlQd0QHd8QI-PI9PQNzVUFQWtarUtUaXsleUqxAYCLmFe98asLP-Lhsgk-wia9pfEVbdcDYzMFMLJGWFNVvgMnDou2tuGpZ-Yl_BxIrjjXtX8Tcr9uPMEKjY05kMIQqrZehAYDTW32eNIz6')"></div>
+<div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
+<div class="w-8 h-8 bg-primary rounded-full flex items-center justify-center glow-orb border-2 border-white animate-bounce">
+<span class="material-symbols-outlined text-on-primary-container" style="font-variation-settings: 'FILL' 1;">location_on</span>
+</div>
+</div>
+</div>
+<div class="h-16 shrink-0 bg-surface-container-high/40 border-t border-glass-stroke px-6 flex items-center justify-between">
+<div class="flex gap-8">
+<div>
+<p class="text-label-sm text-on-surface-variant mb-0.5">Device ID</p>
+<p class="text-label-md font-bold text-on-surface">Jimi-IoT-371-X</p>
+</div>
+<div>
+<p class="text-label-sm text-on-surface-variant mb-0.5">Signal Strength</p>
+<div class="flex gap-0.5 items-end h-4">
+<div class="w-1 h-2 bg-emerald-active rounded-t-sm"></div>
+<div class="w-1 h-3 bg-emerald-active rounded-t-sm"></div>
+<div class="w-1 h-4 bg-emerald-active rounded-t-sm"></div>
+<div class="w-1 h-1.5 bg-on-surface-variant/30 rounded-t-sm"></div>
+</div>
+</div>
+</div>
+<button class="text-primary hover:bg-primary/10 px-4 py-1.5 rounded-lg border border-primary/30 transition-all font-label-sm flex items-center gap-2">
+<span class="material-symbols-outlined text-[16px]">sync</span> CALIBRATE GPS
+                        </button>
+</div>
+</div>
+<!-- Panel 2: Live Video Stream -->
+<div class="md:col-span-5 md:row-span-12 glass-pane rounded-2xl p-6 flex flex-col gap-4">
+<div class="flex items-center justify-between">
+<h3 class="font-headline-md text-headline-md text-on-surface flex items-center gap-2">
+<span class="material-symbols-outlined text-secondary">videocam</span>
+                            Visual Uplink
+                        </h3>
+<div class="flex gap-1">
+<div class="w-1.5 h-1.5 rounded-full bg-critical-red animate-pulse"></div>
+<span class="text-label-sm text-on-surface-variant">REC</span>
+</div>
+</div>
+<div class="space-y-4 flex-1">
+<div class="relative aspect-video rounded-xl overflow-hidden bg-black border border-glass-stroke group/cam">
+<div class="w-full h-full bg-cover bg-center" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuAxS58J-DppdNIC-q4OLwVfxoeojyvv3yo7JduIQO9BjGCjjCmaWpykQsZWC4sAurVnDwUu_N0LljwcOpRRseqecTdUBFCdJ-Lm1BU3oxjX4Czt3Krce48LGLI1ng6iFNmiL4dLxNS_vW-aTCFqI1LAVdKXD1wDxxbC2vS_8vivvCPgWJ29vZTr554YCRovA7YXf3yXprjmFmOAzp9CfX_ggGZfBN3DPWBJWFXtWSAua8xBwIaPgOLev2Ov5Dtd3_tTbBUp7LJaG-fO')"></div>
+<div class="absolute top-2 left-2 px-2 py-1 bg-black/60 backdrop-blur-sm rounded text-[10px] font-bold text-white border border-white/20">CH_01 | PRIMARY</div>
+<div class="absolute inset-0 bg-primary/10 opacity-0 group-hover/cam:opacity-100 transition-opacity flex items-center justify-center">
+<span class="material-symbols-outlined text-white text-4xl">fullscreen</span>
+</div>
+</div>
+<div class="relative aspect-video rounded-xl overflow-hidden bg-black border border-glass-stroke group/cam">
+<div class="w-full h-full bg-cover bg-center" style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuCjFXgi0b-D9c3TP9RSr4Cs-Gzqn-YU9dscvFqRmEOmrWWdMJtwbFQALvWhKmvpY3ULpAZVw-jUGQjpGnn2itT-l63Ic7VY_fDqKoP2mxF9V2uxbUYNRwTw9npc26Z9MJUYjbETCKq8xfk_EKp1FlbfFQSoEJO44JqrJA652VT3TNJQtbxMuL-vDHa6uDrKt9nJMBCsbdCp60o3Ez2YWHdRaAm3gsPn-ySbCpxcJZiA_3ly3irC8ws2SOGq9qk6zLon8Aj9azF0_W0c')"></div>
+<div class="absolute top-2 left-2 px-2 py-1 bg-black/60 backdrop-blur-sm rounded text-[10px] font-bold text-white border border-white/20">CH_02 | MACRO</div>
+<div class="absolute inset-0 bg-primary/10 opacity-0 group-hover/cam:opacity-100 transition-opacity flex items-center justify-center">
+<span class="material-symbols-outlined text-white text-4xl">fullscreen</span>
+</div>
+</div>
+<div class="grid grid-cols-2 gap-3">
+<button class="aether-gradient py-3 rounded-xl text-white font-label-md flex items-center justify-center gap-2 hover:brightness-110 active:scale-95 transition-all">
+<span class="material-symbols-outlined">play_arrow</span> START STREAM
+                            </button>
+<button class="bg-surface-variant hover:bg-surface-bright py-3 rounded-xl text-on-surface font-label-md flex items-center justify-center gap-2 border border-glass-stroke active:scale-95 transition-all">
+<span class="material-symbols-outlined">stop</span> STOP
+                            </button>
+</div>
+<div class="grid grid-cols-2 gap-3">
+<div class="bg-glass-fill border border-glass-stroke p-3 rounded-xl">
+<p class="text-label-sm text-on-surface-variant">Bitrate</p>
+<p class="text-label-md font-bold text-secondary">4.2 Mbps</p>
+</div>
+<div class="bg-glass-fill border border-glass-stroke p-3 rounded-xl">
+<p class="text-label-sm text-on-surface-variant">Latency</p>
+<p class="text-label-md font-bold text-iris-blue">14ms</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Panel 3: AI Plant Health -->
+<div class="md:col-span-7 md:row-span-7 glass-pane rounded-2xl p-6 flex flex-col gap-4 overflow-hidden">
+<div class="flex items-center justify-between shrink-0">
+<div class="flex items-center gap-4">
+<h3 class="font-headline-md text-headline-md text-on-surface flex items-center gap-2">
+<span class="material-symbols-outlined text-emerald-active">auto_awesome</span>
+                                AI Cognitive Analysis
+                            </h3>
+<div class="h-6 w-px bg-glass-stroke"></div>
+<span class="text-label-md text-primary font-bold">FloraScan v4.1</span>
+</div>
+<div class="flex items-center gap-3">
+<span class="text-label-md text-on-surface-variant">Live Analysis</span>
+<div class="w-12 h-6 bg-primary-container rounded-full relative p-1 cursor-pointer">
+<div class="w-4 h-4 bg-white rounded-full absolute right-1"></div>
+</div>
+</div>
+</div>
+<div class="flex flex-col md:flex-row gap-6 flex-1 min-h-0">
+<div class="w-full md:w-1/2 space-y-5">
+<div class="space-y-2">
+<div class="flex justify-between items-end">
+<span class="text-label-md text-on-surface">VITALITY RATING</span>
+<span class="text-headline-md text-emerald-active font-bold">92%</span>
+</div>
+<div class="h-3 w-full bg-surface-container-low rounded-full overflow-hidden border border-glass-stroke p-[2px]">
+<div class="h-full rounded-full health-bar-gradient shadow-[0_0_10px_rgba(16,185,129,0.5)]" style="width: 92%"></div>
+</div>
+</div>
+<div class="grid grid-cols-2 gap-4">
+<div class="p-3 rounded-xl bg-glass-fill border-l-4 border-iris-blue">
+<p class="text-label-sm text-on-surface-variant">Soil Moisture</p>
+<div class="flex items-baseline gap-2">
+<span class="text-label-md font-bold text-on-surface text-lg">45.2%</span>
+<span class="text-[10px] text-emerald-active">↑ 2%</span>
+</div>
+</div>
+<div class="p-3 rounded-xl bg-glass-fill border-l-4 border-amber-warning">
+<p class="text-label-sm text-on-surface-variant">Nitrogen</p>
+<div class="flex items-baseline gap-2">
+<span class="text-label-md font-bold text-on-surface text-lg">120 ppm</span>
+<span class="text-[10px] text-amber-warning">STABLE</span>
+</div>
+</div>
+</div>
+<div class="p-4 rounded-xl bg-primary/5 border border-primary/20">
+<p class="text-label-md text-primary font-bold mb-1 flex items-center gap-2">
+<span class="material-symbols-outlined text-sm">info</span> AI OBSERVATION
+                                </p>
+<p class="text-body-md text-on-surface-variant leading-relaxed italic">
+                                    "Leaf density index indicates optimal photosynthetic absorption. Recommend 500ml nutrient cycle at 04:00 UTC."
+                                </p>
+</div>
+</div>
+<div class="w-full md:w-1/2 flex flex-col bg-black/20 rounded-xl border border-glass-stroke overflow-hidden">
+<div class="bg-surface-container-high px-4 py-2 border-b border-glass-stroke">
+<span class="text-label-sm font-bold text-on-surface-variant uppercase tracking-tighter">Detailed Analysis Log</span>
+</div>
+<div class="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar font-label-md text-[11px]">
+<div class="flex gap-3 text-emerald-active">
+<span class="opacity-50">14:22:10</span>
+<span class="">[SYSTEM] Deep leaf scan initialized...</span>
+</div>
+<div class="flex gap-3 text-on-surface-variant">
+<span class="opacity-50">14:22:12</span>
+<span class="">Analyzing leaf density... 0.84 index detected.</span>
+</div>
+<div class="flex gap-3 text-on-surface-variant">
+<span class="opacity-50">14:22:15</span>
+<span class="">Chlorophyll fluorescence stable at 0.78 Fv/Fm.</span>
+</div>
+<div class="flex gap-3 text-secondary">
+<span class="opacity-50">14:22:18</span>
+<span class="">[AI] Neural net predicting growth spurt in T-48h.</span>
+</div>
+<div class="flex gap-3 text-on-surface-variant">
+<span class="opacity-50">14:22:20</span>
+<span class="">Transpiration rate logged: 3.2 mmol/m²/s.</span>
+</div>
+<div class="flex gap-3 text-on-surface-variant shimmer rounded">
+<span class="opacity-50">14:22:24</span>
+<span class="">Evaluating root zone temperature gradients...</span>
+</div>
+<div class="flex gap-3 text-on-surface-variant">
+<span class="opacity-50">14:22:28</span>
+<span class="">Scanning for pathogens... None detected.</span>
+</div>
+</div>
+</div>
+</div>
+</div></div>
+</div>
+</main>
+<!-- Micro-interaction Script -->
+<script>
+        // Simple ambient pulse for glowing elements
+        document.querySelectorAll('.glow-orb').forEach(orb => {
+            setInterval(() => {
+                orb.style.opacity = orb.style.opacity === '0.7' ? '1' : '0.7';
+            }, 1500);
+        });
+
+        // Toggle state simulation
+        const aiToggle = document.querySelector('.w-12.h-6');
+        if(aiToggle) {
+            aiToggle.addEventListener('click', () => {
+                const knob = aiToggle.querySelector('.w-4.h-4');
+                const isActive = knob.classList.contains('right-1');
+                if(isActive) {
+                    knob.classList.remove('right-1');
+                    knob.classList.add('left-1');
+                    aiToggle.classList.remove('bg-primary-container');
+                    aiToggle.classList.add('bg-surface-variant');
+                } else {
+                    knob.classList.add('right-1');
+                    knob.classList.remove('left-1');
+                    aiToggle.classList.add('bg-primary-container');
+                    aiToggle.classList.remove('bg-surface-variant');
+                }
+            });
+        }
+    </script>
+
+
+</body></html>

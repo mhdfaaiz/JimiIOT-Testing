@@ -45,10 +45,16 @@ function setVideoStats(channel, stats) {
   const ch = Number(channel);
   if (ch !== 1 && ch !== 2) return;
 
-  const prefix = ch === 1 ? "ch1" : "ch2";
-  setText(`${prefix}Bytes`,   stats.bytes   != null ? String(stats.bytes)   : "-");
-  setText(`${prefix}Packets`, stats.packets != null ? String(stats.packets) : "-");
-  setText(`${prefix}Last`,    stats.lastTs  ? fmtTs(stats.lastTs)           : "-");
+  const mbps = Number(stats?.kbps);
+  if (Number.isFinite(mbps)) {
+    setText("bitrateDisplay", `${mbps.toFixed(2)} Mbps`);
+  }
+
+  const lastTs = stats?.lastTs ? new Date(stats.lastTs).getTime() : NaN;
+  if (Number.isFinite(lastTs)) {
+    const latency = Math.max(0, Date.now() - lastTs);
+    setText("latencyDisplay", `${latency} ms`);
+  }
 }
 
 /* ─── Map setup ─────────────────────────────────────────────────────── */
@@ -489,10 +495,10 @@ ws.onmessage = (ev) => {
 
   if (msg.type === "video") {
     const v = msg.data;
-    document.getElementById("vDevice").textContent  = msg.deviceId;
-    document.getElementById("vChannel").textContent = v.channel;
-    document.getElementById("vType").textContent    = v.payloadType;
-    document.getElementById("vSize").textContent    = v.size + " bytes";
+    setText("vDevice", msg.deviceId);
+    setText("vChannel", String(v.channel ?? "-"));
+    setText("vType", String(v.payloadType ?? "-"));
+    setText("vSize", v?.size != null ? `${v.size} bytes` : "-");
 
     prependLine(
       videoLog,
@@ -559,33 +565,35 @@ function displayAnalysisResult(analysis) {
 
   if (!resultDiv) return;
 
-  // Update plant information
-  document.getElementById('aiPlantName').textContent = analysis.plantName || 'Unknown Plant';
-  document.getElementById('aiScientificName').textContent = analysis.scientificName || '-';
+  const plantNameEl = document.getElementById('aiPlantName');
+  const scientificNameEl = document.getElementById('aiScientificName');
+  if (plantNameEl) plantNameEl.textContent = analysis.plantName || 'Unknown Plant';
+  if (scientificNameEl) scientificNameEl.textContent = analysis.scientificName || '-';
 
   // Update health status and rating
   const healthRating = Math.max(0, Math.min(100, analysis.plantHealthRating || 0));
-  document.getElementById('healthRating').textContent = healthRating + '%';
+  const healthRatingEl = document.getElementById('healthRating');
+  if (healthRatingEl) healthRatingEl.textContent = healthRating + '%';
 
   // Update health bar
   const healthBar = document.getElementById('healthBar');
-  healthBar.style.width = healthRating + '%';
+  if (healthBar) healthBar.style.width = healthRating + '%';
 
   // Update soil condition
   const moisture = analysis.soilMoisture || Math.floor(Math.random() * 60) + 30;
   const moistureTrend = Math.random() > 0.5 ? '↑ 2%' : '↓ 1%';
-  document.getElementById('moistureValue').textContent = moisture.toFixed(1) + '%';
-  document.getElementById('moistureTrend').textContent = moistureTrend;
+  setText('moistureValue', moisture.toFixed(1) + '%');
+  setText('moistureTrend', moistureTrend);
 
   // Update nitrogen
   const nitrogen = analysis.nitrogenLevel || (Math.floor(Math.random() * 40) + 100);
-  document.getElementById('nitrogenValue').textContent = nitrogen + ' ppm';
-  document.getElementById('nitrogenStatus').textContent = 'STABLE';
+  setText('nitrogenValue', nitrogen + ' ppm');
+  setText('nitrogenStatus', 'STABLE');
 
   // Update AI observation
   const observation = analysis.detailedAnalysis || 
     "Leaf density index indicates optimal photosynthetic absorption. Recommend maintenance at 04:00 UTC.";
-  document.getElementById('aiObservation').textContent = observation;
+  setText('aiObservation', observation);
 
   // Update analysis log
   const log = document.getElementById('analysisLog');
@@ -610,7 +618,7 @@ function displayAnalysisResult(analysis) {
   }
 
   // Show result, hide no-data message
-  noDataDiv.style.display = 'none';
+  if (noDataDiv) noDataDiv.style.display = 'none';
   resultDiv.style.display = '';
 }
 
@@ -823,8 +831,6 @@ document.getElementById("stopVideoBtn")?.addEventListener("click", () => {
 });
 
 // Live Analysis Toggle
-document.getElementById("liveAnalysisToggle")?.addEventListener("click", toggleLiveAnalysis);
-
 /**
  * Handle interval change during live analysis
  */
