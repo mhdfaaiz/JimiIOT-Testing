@@ -380,7 +380,7 @@ document.getElementById("startVideoBtn")?.addEventListener("click", () => {
   const deviceId = currentVideoDeviceId
                 || document.getElementById("deviceId")?.textContent?.trim();
   if (!deviceId || deviceId === "-" || deviceId === "") {
-    document.getElementById("videoStatus").textContent = "⚠ No device connected yet";
+    console.warn("⚠ No device connected yet");
     return;
   }
 
@@ -406,9 +406,7 @@ document.getElementById("startVideoBtn")?.addEventListener("click", () => {
     .then((d) => {
       console.log("[video] start result", d);
       const ok = d.results?.some((r) => r.result === 0 || r.status === "success");
-      document.getElementById("videoStatus").textContent = ok
-        ? "✅ Connected — streaming"
-        : "⚠ Connection failed";
+      console.log(ok ? "✅ Connected — streaming" : "⚠ Connection failed");
       [1, 2].forEach((ch) => {
         initVideoPlayer(deviceId, ch);
         initAudioPlayer(deviceId, ch);
@@ -416,7 +414,7 @@ document.getElementById("startVideoBtn")?.addEventListener("click", () => {
     })
     .catch((err) => {
       console.error("[video] start error", err);
-      document.getElementById("videoStatus").textContent = "❌ API error";
+      console.log("❌ API error");
     }));
 });
 
