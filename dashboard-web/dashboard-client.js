@@ -502,6 +502,9 @@ ws.onmessage = (ev) => {
 /* ─── AI Plant Health Analysis ──────────────────────────────────────────── */
 
 let selectedAnalysisChannel = 1;  // Track which video channel to capture from
+let liveAnalysisRunning = false;  // Live analysis state
+let liveAnalysisInterval = null;  // Interval ID
+let analysisInFlight = false;     // Prevent concurrent requests
 
 /**
  * Capture a frame from the selected video element and convert to base64 JPEG
@@ -612,7 +615,32 @@ function displayAnalysisResult(analysis) {
 }
 
 /**
- * Send frame to API for analysis
+ * Send frame to API for analysis (core function used by both manual and live)
+ */
+async function analyzeFrameAPI(base64Image, isLive = false) {
+  try {
+    const response = await fetch('/api/analyze-plant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base64Image })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || !data.ok) {
+      console.error('[AI] API error:', data);
+      return null;
+    }
+
+    return data.analysis;
+  } catch (err) {
+    console.error('[AI] Error during analysis:', err);
+    return null;
+  }
+}
+
+/**
+ * Manual single-frame analysis
  */
 async function analyzeCurrentFrame() {
   const btn = document.getElementById('analyzePlantBtn');
@@ -636,24 +664,16 @@ async function analyzeCurrentFrame() {
 
     status.textContent = 'Sending to AI for analysis...';
 
-    // Send to backend API
-    const response = await fetch('/api/analyze-plant', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base64Image })
-    });
+    const analysis = await analyzeFrameAPI(base64Image, false);
 
-    const data = await response.json();
-
-    if (!response.ok || !data.ok) {
-      console.error('[AI] API error:', data);
-      status.textContent = `⚠ Analysis failed: ${data.message || 'Unknown error'}`;
+    if (!analysis) {
+      status.textContent = '⚠ Analysis failed';
       btn.disabled = false;
       return;
     }
 
     // Display the analysis result
-    displayAnalysisResult(data.analysis);
+    displayAnalysisResult(analysis);
     status.textContent = '✅ Analysis complete';
 
     // Re-enable button after a short delay
@@ -667,6 +687,125 @@ async function analyzeCurrentFrame() {
     status.textContent = `❌ Error: ${err.message}`;
     btn.disabled = false;
   }
+}
+
+/**
+ * Live analysis loop - captures and analyzes continuously
+ */
+async function liveAnalysisLoop() {
+  // Skip if already processing or if live mode is off
+  if (analysisInFlight || !liveAnalysisRunning) {
+    return;
+  }
+
+  analysisInFlight = true;
+
+  try {
+    // Capture frame from the selected video channel
+    const base64Image = captureVideoFrameAsBase64Jpeg(selectedAnalysisChannel);
+
+    if (!base64Image) {
+      console.warn('[AI Live] Failed to capture frame');
+      analysisInFlight = false;
+      return;
+    }
+
+    // Send to API
+    const analysis = await analyzeFrameAPI(base64Image, true);
+
+    if (analysis && document.getElementById('autoUpdateUI')?.checked) {
+      displayAnalysisResult(analysis);
+    }
+
+  } catch (err) {
+    console.error('[AI Live] Error in analysis loop:', err);
+  } finally {
+    analysisInFlight = false;
+  }
+}
+
+/**
+ * Start live continuous analysis
+ */
+function startLiveAnalysis() {
+  if (liveAnalysisRunning) return;
+
+  const btn = document.getElementById('liveAnalysisToggle');
+  const interval = parseInt(document.getElementById('analysisInterval')?.value || 3000);
+
+  liveAnalysisRunning = true;
+  
+  // Update button UI
+  btn.textContent = '🟢 Live Analysis ON';
+  btn.style.opacity = '1';
+  btn.style.background = 'linear-gradient(135deg, #10b981, #059669)';
+  btn.style.boxShadow = '0 4px 12px rgba(16, 185, 129, 0.4)';
+
+  // Show settings
+  const settings = document.getElementById('liveAnalysisSettings');
+  if (settings) settings.style.display = '';
+
+  // Update status
+  const status = document.getElementById('analyzeStatus');
+  if (status) status.textContent = `🔴 Live (${interval / 1000}s interval)`;
+
+  // Start interval-based capture
+  liveAnalysisInterval = setInterval(() => {
+    liveAnalysisLoop();
+  }, interval);
+
+  console.log('[AI] Live analysis started with', interval, 'ms interval');
+}
+
+/**
+ * Stop live continuous analysis
+ */
+function stopLiveAnalysis() {
+  if (!liveAnalysisRunning) return;
+
+  liveAnalysisRunning = false;
+  
+  if (liveAnalysisInterval) {
+    clearInterval(liveAnalysisInterval);
+    liveAnalysisInterval = null;
+  }
+
+  const btn = document.getElementById('liveAnalysisToggle');
+  btn.textContent = '🔴 Live Analysis OFF';
+  btn.style.opacity = '0.6';
+  btn.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+  btn.style.boxShadow = '';
+
+  // Hide settings
+  const settings = document.getElementById('liveAnalysisSettings');
+  if (settings) settings.style.display = 'none';
+
+  const status = document.getElementById('analyzeStatus');
+  if (status) status.textContent = '';
+
+  console.log('[AI] Live analysis stopped');
+}
+
+/**
+ * Toggle live analysis on/off
+ */
+function toggleLiveAnalysis() {
+  if (liveAnalysisRunning) {
+    stopLiveAnalysis();
+  } else {
+    startLiveAnalysis();
+  }
+}
+
+/**
+ * Handle interval change during live analysis
+ */
+function handleIntervalChange() {
+  if (!liveAnalysisRunning) return;
+
+  // Restart with new interval
+  stopLiveAnalysis();
+  startLiveAnalysis();
 }
 
 /**
@@ -696,6 +835,16 @@ function initializeAIAnalysis() {
     btn.addEventListener('click', analyzeCurrentFrame);
   }
 
+  const liveBtn = document.getElementById('liveAnalysisToggle');
+  if (liveBtn) {
+    liveBtn.addEventListener('click', toggleLiveAnalysis);
+  }
+
+  const intervalSelect = document.getElementById('analysisInterval');
+  if (intervalSelect) {
+    intervalSelect.addEventListener('change', handleIntervalChange);
+  }
+
   // Setup channel selection
   setupChannelSelector();
 
@@ -712,9 +861,11 @@ if (document.readyState === 'loading') {
 // Enable analyze button when video is playing
 setInterval(() => {
   const btn = document.getElementById('analyzePlantBtn');
-  if (btn) {
+  const liveBtn = document.getElementById('liveAnalysisToggle');
+  if (btn || liveBtn) {
     const videoEl = document.getElementById(`videoEl${selectedAnalysisChannel}`);
     const hasVideo = videoEl && videoEl.readyState >= 2;  // HAVE_CURRENT_DATA or better
-    btn.disabled = !hasVideo;
+    if (btn) btn.disabled = !hasVideo;
+    if (liveBtn) liveBtn.disabled = !hasVideo;
   }
 }, 1000);

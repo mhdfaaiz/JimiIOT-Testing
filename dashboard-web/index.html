@@ -386,7 +386,25 @@
         <h2>🌿 AI Plant Health Analysis</h2>
         <div class="video-controls">
           <button id="analyzePlantBtn" disabled>📷 Analyze from Camera</button>
+          <button id="liveAnalysisToggle" disabled style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); opacity: 0.6;">🔴 Live Analysis OFF</button>
           <span id="analyzeStatus"></span>
+        </div>
+        
+        <!-- Live Analysis Settings -->
+        <div id="liveAnalysisSettings" style="display: none; padding: 12px 16px; background: rgba(102, 126, 234, 0.1); border-radius: 12px; margin-bottom: 12px;">
+          <div style="display: flex; align-items: center; gap: 12px; font-size: 0.9rem;">
+            <label style="color: #555;">Interval:</label>
+            <select id="analysisInterval" style="padding: 6px 10px; border-radius: 6px; border: 1px solid #e9ecef;">
+              <option value="2000">Every 2 seconds</option>
+              <option value="3000" selected>Every 3 seconds</option>
+              <option value="5000">Every 5 seconds</option>
+              <option value="10000">Every 10 seconds</option>
+            </select>
+            <label style="margin-left: 20px; color: #555;">
+              <input type="checkbox" id="autoUpdateUI" checked style="margin-right: 6px;">
+              Auto-update results
+            </label>
+          </div>
         </div>
 
         <div id="aiNoData">
