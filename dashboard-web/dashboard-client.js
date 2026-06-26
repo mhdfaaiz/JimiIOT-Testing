@@ -633,17 +633,23 @@ async function analyzeFrameAPI(base64Image, isLive = false) {
       body: JSON.stringify({ base64Image })
     });
 
-    const data = await response.json();
-
-    if (!response.ok || !data.ok) {
-      console.error('[AI] API error:', data);
-      return null;
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {
+      data = null;
     }
 
-    return data.analysis;
+    if (!response.ok || !data?.ok) {
+      const message = data?.message || `Analysis API request failed (HTTP ${response.status}).`;
+      console.error('[AI] API error:', message, data);
+      return { analysis: null, error: message };
+    }
+
+    return { analysis: data.analysis, error: null };
   } catch (err) {
     console.error('[AI] Error during analysis:', err);
-    return null;
+    return { analysis: null, error: err?.message || 'Network error while contacting analysis API.' };
   }
 }
 
@@ -672,10 +678,10 @@ async function analyzeCurrentFrame() {
 
     status.textContent = 'Sending to AI for analysis...';
 
-    const analysis = await analyzeFrameAPI(base64Image, false);
+    const { analysis, error } = await analyzeFrameAPI(base64Image, false);
 
     if (!analysis) {
-      status.textContent = '⚠ Analysis failed';
+      status.textContent = `⚠ ${error || 'Analysis failed'}`;
       btn.disabled = false;
       return;
     }
@@ -719,7 +725,13 @@ async function liveAnalysisLoop() {
     }
 
     // Send to API
-    const analysis = await analyzeFrameAPI(base64Image, true);
+    const { analysis, error } = await analyzeFrameAPI(base64Image, true);
+
+    if (!analysis) {
+      const status = document.getElementById('analyzeStatus');
+      if (status) status.textContent = `⚠ Live: ${error || 'analysis failed'}`;
+      return;
+    }
 
     if (analysis && document.getElementById('autoUpdateUI')?.checked) {
       displayAnalysisResult(analysis);
