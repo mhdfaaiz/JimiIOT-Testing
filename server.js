@@ -6,12 +6,14 @@ import fs from "fs";
 import { spawn } from "child_process";
 import { WebSocketServer, WebSocket } from "ws";
 import { fileURLToPath } from "url";
+import 'dotenv/config';
 
 import { startJT808Server } from "./protocol-jt808/tcp-gateway.js";
 import { startJT1078Udp }   from "./protocol-jt1078/udp-stream-receiver.js";
 import { startJT1078Tcp }   from "./protocol-jt1078/tcp-stream-receiver.js";
 import { encodeRealtimeAv9101, encodeRealtimeAvCtrl9102 } from "./protocol-jt808/message-handlers.js";
 import { JT1078Reassembler } from "./protocol-jt1078/frame-reassembler.js";
+import analyzePlantRouter from "./routes/analyzePlant.js";
 // flv-muxer removed
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1074,6 +1076,10 @@ app.use("/hls", express.static(HLS_ROOT_DIR, {
     }
   }
 }));
+
+// ── AI Plant Analysis API ─────────────────────────────────────────────────────
+
+app.use("/api", analyzePlantRouter);
 
 // ── REST APIs ─────────────────────────────────────────────────────────────────
 

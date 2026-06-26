@@ -498,3 +498,223 @@ ws.onmessage = (ev) => {
     setVideoStats(msg.data?.channel, msg.data);
   }
 };
+
+/* ─── AI Plant Health Analysis ──────────────────────────────────────────── */
+
+let selectedAnalysisChannel = 1;  // Track which video channel to capture from
+
+/**
+ * Capture a frame from the selected video element and convert to base64 JPEG
+ */
+function captureVideoFrameAsBase64Jpeg(channel = 1) {
+  const videoEl = document.getElementById(`videoEl${channel}`);
+  if (!videoEl) {
+    console.warn(`Video element not found for channel ${channel}`);
+    return null;
+  }
+
+  // Create a canvas matching the video dimensions
+  const canvas = document.createElement('canvas');
+  canvas.width = videoEl.videoWidth || 1280;
+  canvas.height = videoEl.videoHeight || 720;
+
+  if (canvas.width === 0 || canvas.height === 0) {
+    console.warn(`Invalid video dimensions: ${canvas.width}x${canvas.height}`);
+    return null;
+  }
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    console.error('Failed to get canvas context');
+    return null;
+  }
+
+  // Draw the current video frame onto the canvas
+  ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+
+  // Convert to base64 JPEG (quality 0.92 for balance between size and quality)
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+  
+  // Extract base64 part (remove "data:image/jpeg;base64," prefix)
+  const base64Image = dataUrl.split(',')[1];
+  
+  return base64Image;
+}
+
+/**
+ * Display AI analysis results in the UI
+ */
+function displayAnalysisResult(analysis) {
+  const resultDiv = document.getElementById('aiAnalysisResult');
+  const noDataDiv = document.getElementById('aiNoData');
+
+  if (!resultDiv) return;
+
+  // Determine health badge color based on rating
+  function getHealthBadgeClass(rating) {
+    if (rating >= 70) return 'on';      // green - good
+    if (rating >= 50) return 'fix';     // blue - fair
+    if (rating >= 30) return 'nofix';   // orange - poor
+    return 'error';                      // red - critical
+  }
+
+  // Update plant information
+  document.getElementById('aiPlantName').textContent = analysis.plantName || '-';
+  document.getElementById('aiScientificName').textContent = analysis.scientificName || '-';
+  document.getElementById('aiSoilCondition').textContent = analysis.soilCondition || '-';
+
+  // Update health status and rating
+  const healthStatus = analysis.healthStatus || 'Unknown';
+  const healthRating = Math.max(0, Math.min(100, analysis.plantHealthRating || 0));
+  
+  const badge = document.getElementById('aiHealthBadge');
+  badge.textContent = healthStatus;
+  badge.className = `badge ${getHealthBadgeClass(healthRating)}`;
+
+  // Update health bar
+  const healthBar = document.getElementById('aiHealthBar');
+  healthBar.style.width = healthRating + '%';
+  document.getElementById('aiHealthRating').textContent = healthRating + '%';
+
+  // Update detailed analysis
+  const analysis_text = analysis.detailedAnalysis || 'No analysis available';
+  document.getElementById('aiDetailedAnalysis').textContent = analysis_text;
+
+  // Update care advice
+  const careAdviceList = document.getElementById('aiCareAdvice');
+  careAdviceList.innerHTML = '';
+  
+  if (Array.isArray(analysis.careAdvice) && analysis.careAdvice.length > 0) {
+    analysis.careAdvice.forEach(advice => {
+      if (advice && String(advice).trim()) {
+        const li = document.createElement('li');
+        li.style.margin = '8px 0';
+        li.style.color = '#555';
+        li.textContent = String(advice).trim();
+        careAdviceList.appendChild(li);
+      }
+    });
+  } else {
+    const li = document.createElement('li');
+    li.style.color = '#aaa';
+    li.style.margin = '8px 0';
+    li.textContent = 'No care advice available';
+    careAdviceList.appendChild(li);
+  }
+
+  // Update timestamp
+  const now = new Date();
+  document.getElementById('aiTimestamp').textContent = now.toISOString();
+
+  // Show result, hide no-data message
+  noDataDiv.style.display = 'none';
+  resultDiv.style.display = '';
+}
+
+/**
+ * Send frame to API for analysis
+ */
+async function analyzeCurrentFrame() {
+  const btn = document.getElementById('analyzePlantBtn');
+  const status = document.getElementById('analyzeStatus');
+
+  if (!btn || !status) return;
+
+  try {
+    // Disable button and show loading status
+    btn.disabled = true;
+    status.textContent = 'Capturing frame...';
+
+    // Capture frame from the selected video channel
+    const base64Image = captureVideoFrameAsBase64Jpeg(selectedAnalysisChannel);
+
+    if (!base64Image) {
+      status.textContent = '⚠ Failed to capture frame from video';
+      btn.disabled = false;
+      return;
+    }
+
+    status.textContent = 'Sending to AI for analysis...';
+
+    // Send to backend API
+    const response = await fetch('/api/analyze-plant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base64Image })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || !data.ok) {
+      console.error('[AI] API error:', data);
+      status.textContent = `⚠ Analysis failed: ${data.message || 'Unknown error'}`;
+      btn.disabled = false;
+      return;
+    }
+
+    // Display the analysis result
+    displayAnalysisResult(data.analysis);
+    status.textContent = '✅ Analysis complete';
+
+    // Re-enable button after a short delay
+    setTimeout(() => {
+      btn.disabled = false;
+      status.textContent = '';
+    }, 2000);
+
+  } catch (err) {
+    console.error('[AI] Error during analysis:', err);
+    status.textContent = `❌ Error: ${err.message}`;
+    btn.disabled = false;
+  }
+}
+
+/**
+ * Handle channel selector changes
+ */
+function setupChannelSelector() {
+  [1, 2].forEach(ch => {
+    const radioId = `ch${ch}Radio`;
+    const radio = document.querySelector(`input[name="analysisChannel"][value="${ch}"]`);
+    
+    if (radio) {
+      radio.addEventListener('change', (e) => {
+        if (e.target.checked) {
+          selectedAnalysisChannel = ch;
+        }
+      });
+    }
+  });
+}
+
+/**
+ * Initialize AI analysis UI
+ */
+function initializeAIAnalysis() {
+  const btn = document.getElementById('analyzePlantBtn');
+  if (btn) {
+    btn.addEventListener('click', analyzeCurrentFrame);
+  }
+
+  // Setup channel selection
+  setupChannelSelector();
+
+  console.log('[AI] Plant health analysis initialized');
+}
+
+// Initialize AI analysis when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeAIAnalysis);
+} else {
+  initializeAIAnalysis();
+}
+
+// Enable analyze button when video is playing
+setInterval(() => {
+  const btn = document.getElementById('analyzePlantBtn');
+  if (btn) {
+    const videoEl = document.getElementById(`videoEl${selectedAnalysisChannel}`);
+    const hasVideo = videoEl && videoEl.readyState >= 2;  // HAVE_CURRENT_DATA or better
+    btn.disabled = !hasVideo;
+  }
+}, 1000);
