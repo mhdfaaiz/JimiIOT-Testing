@@ -517,6 +517,81 @@ let selectedAnalysisChannel = 1;  // Track which video channel to capture from
 let liveAnalysisRunning = false;  // Live analysis state
 let liveAnalysisInterval = null;  // Interval ID
 let analysisInFlight = false;     // Prevent concurrent requests
+let liveRetryNotBefore = 0;       // Cooldown timestamp for rate-limit handling
+let lastLiveFrameSignature = null;
+let lastLiveAnalyzeAt = 0;
+
+function extractRetryAfterMs(message) {
+  const text = String(message || '');
+  const secMatch = text.match(/retry\s+in\s+([0-9]+(?:\.[0-9]+)?)s/i);
+  if (secMatch) return Math.ceil(Number(secMatch[1]) * 1000);
+
+  const msMatch = text.match(/retry\s+in\s+([0-9]+(?:\.[0-9]+)?)s\.?/i);
+  if (msMatch) return Math.ceil(Number(msMatch[1]) * 1000);
+
+  const delayMatch = text.match(/"retryDelay"\s*:\s*"([0-9]+)s"/i);
+  if (delayMatch) return Math.ceil(Number(delayMatch[1]) * 1000);
+
+  return 0;
+}
+
+function summarizeAiError(message, statusCode) {
+  const raw = String(message || '').trim();
+  const isQuota = statusCode === 429 || /429|quota exceeded|too many requests/i.test(raw);
+  if (!isQuota) return raw || 'Analysis request failed.';
+
+  const retryMs = extractRetryAfterMs(raw);
+  const retrySec = retryMs > 0 ? Math.ceil(retryMs / 1000) : 60;
+  return `AI provider quota reached. Retry in ${retrySec}s or reduce live frequency.`;
+}
+
+function captureFrameSignature(channel = 1) {
+  const videoEl = document.getElementById(`videoEl${channel}`);
+  if (!videoEl) return null;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 16;
+  canvas.height = 9;
+
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+
+  ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  let signature = '';
+
+  for (let index = 0; index < data.length; index += 4) {
+    const gray = Math.round((data[index] + data[index + 1] + data[index + 2]) / 3);
+    signature += Math.min(15, Math.floor(gray / 16)).toString(16);
+  }
+
+  return signature;
+}
+
+function getSignatureDifference(previousSignature, nextSignature) {
+  if (!previousSignature || !nextSignature || previousSignature.length !== nextSignature.length) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  let difference = 0;
+  for (let index = 0; index < nextSignature.length; index += 1) {
+    if (previousSignature[index] !== nextSignature[index]) {
+      difference += 1;
+    }
+  }
+
+  return difference;
+}
+
+function shouldSendLiveFrame(frameSignature) {
+  if (!frameSignature) return true;
+
+  const now = Date.now();
+  if (!lastLiveFrameSignature) return true;
+  if ((now - lastLiveAnalyzeAt) >= 30000) return true;
+
+  return getSignatureDifference(lastLiveFrameSignature, frameSignature) >= 12;
+}
 
 /**
  * Capture a frame from the selected video element and convert to base64 JPEG
@@ -625,12 +700,12 @@ function displayAnalysisResult(analysis) {
 /**
  * Send frame to API for analysis (core function used by both manual and live)
  */
-async function analyzeFrameAPI(base64Image, isLive = false) {
+async function analyzeFrameAPI(base64Image, isLive = false, frameSignature = null) {
   try {
     const response = await fetch('/api/analyze-plant', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base64Image })
+      body: JSON.stringify({ base64Image, isLive, frameSignature })
     });
 
     let data = null;
@@ -641,15 +716,31 @@ async function analyzeFrameAPI(base64Image, isLive = false) {
     }
 
     if (!response.ok || !data?.ok) {
-      const message = data?.message || `Analysis API request failed (HTTP ${response.status}).`;
-      console.error('[AI] API error:', message, data);
-      return { analysis: null, error: message };
+      const rawMessage = data?.message || `Analysis API request failed (HTTP ${response.status}).`;
+      const retryAfterMs = Number(data?.retryAfterMs) || extractRetryAfterMs(rawMessage);
+      const error = summarizeAiError(rawMessage, response.status);
+      console.error('[AI] API error:', error, data);
+      return {
+        analysis: null,
+        error,
+        rawError: rawMessage,
+        statusCode: response.status,
+        retryAfterMs
+      };
     }
 
-    return { analysis: data.analysis, error: null };
+    return {
+      analysis: data.analysis,
+      error: null,
+      statusCode: 200,
+      retryAfterMs: 0,
+      cached: Boolean(data?.cached)
+    };
   } catch (err) {
+    const rawMessage = err?.message || 'Network error while contacting analysis API.';
+    const error = summarizeAiError(rawMessage, 0);
     console.error('[AI] Error during analysis:', err);
-    return { analysis: null, error: err?.message || 'Network error while contacting analysis API.' };
+    return { analysis: null, error, rawError: rawMessage, statusCode: 0, retryAfterMs: 0, cached: false };
   }
 }
 
@@ -712,9 +803,23 @@ async function liveAnalysisLoop() {
     return;
   }
 
+  if (Date.now() < liveRetryNotBefore) {
+    const waitSec = Math.ceil((liveRetryNotBefore - Date.now()) / 1000);
+    const status = document.getElementById('analyzeStatus');
+    if (status) status.textContent = `⏳ Live paused: retry in ${waitSec}s`;
+    return;
+  }
+
   analysisInFlight = true;
 
   try {
+    const frameSignature = captureFrameSignature(selectedAnalysisChannel);
+    if (!shouldSendLiveFrame(frameSignature)) {
+      const status = document.getElementById('analyzeStatus');
+      if (status) status.textContent = '⏸ Live: no major scene change, skipping cloud analysis.';
+      return;
+    }
+
     // Capture frame from the selected video channel
     const base64Image = captureVideoFrameAsBase64Jpeg(selectedAnalysisChannel);
 
@@ -725,16 +830,35 @@ async function liveAnalysisLoop() {
     }
 
     // Send to API
-    const { analysis, error } = await analyzeFrameAPI(base64Image, true);
+    lastLiveFrameSignature = frameSignature;
+    lastLiveAnalyzeAt = Date.now();
+
+    const { analysis, error, statusCode, retryAfterMs, cached } = await analyzeFrameAPI(base64Image, true, frameSignature);
 
     if (!analysis) {
       const status = document.getElementById('analyzeStatus');
       if (status) status.textContent = `⚠ Live: ${error || 'analysis failed'}`;
+
+      // Auto-pause live loop on provider quota/rate-limit to avoid repeated failing requests.
+      if (statusCode === 429 || /quota|too many requests/i.test(String(error || ''))) {
+        const cooldownMs = Math.max(10000, retryAfterMs || 60000);
+        liveRetryNotBefore = Date.now() + cooldownMs;
+        stopLiveAnalysis();
+        const waitSec = Math.ceil(cooldownMs / 1000);
+        if (status) status.textContent = `⚠ Live paused (quota). Retry in ${waitSec}s.`;
+      }
       return;
     }
 
     if (analysis && document.getElementById('autoUpdateUI')?.checked) {
       displayAnalysisResult(analysis);
+    }
+
+    const status = document.getElementById('analyzeStatus');
+    if (status) {
+      status.textContent = cached
+        ? '🟡 Live: reused recent analysis result.'
+        : '🟢 Live: analysis updated.';
     }
 
   } catch (err) {
@@ -768,6 +892,12 @@ function startLiveAnalysis() {
 
   // Update status
   const status = document.getElementById('analyzeStatus');
+  if (Date.now() < liveRetryNotBefore) {
+    const waitSec = Math.ceil((liveRetryNotBefore - Date.now()) / 1000);
+    if (status) status.textContent = `⏳ Wait ${waitSec}s before restarting live analysis.`;
+    return;
+  }
+
   if (status) status.textContent = `🟢 Live (${interval / 1000}s interval)`;
 
   // Start interval-based capture
@@ -806,6 +936,8 @@ function stopLiveAnalysis() {
 
   const status = document.getElementById('analyzeStatus');
   if (status) status.textContent = '';
+
+  analysisInFlight = false;
 
   console.log('[AI] Live analysis stopped');
 }
