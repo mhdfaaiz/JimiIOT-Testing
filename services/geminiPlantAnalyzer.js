@@ -51,10 +51,20 @@ function getAiConfig() {
   ).toLowerCase();
 
   if (provider === 'gemini') {
+    const primaryModel = process.env.AI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    const fallbackModels = String(process.env.GEMINI_FALLBACK_MODELS || 'gemini-2.0-flash-lite,gemini-2.0-flash')
+      .split(',')
+      .map((model) => model.trim())
+      .filter(Boolean)
+      .filter((model) => model !== primaryModel);
+
     return {
       provider,
       apiKey: process.env.AI_API_KEY || process.env.GEMINI_API_KEY,
-      model: process.env.AI_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash'
+      model: primaryModel,
+      fallbackModels,
+      maxAttempts: Math.max(1, Number(process.env.GEMINI_MAX_ATTEMPTS || 3) || 3),
+      baseRetryMs: Math.max(500, Number(process.env.GEMINI_RETRY_BASE_MS || 1500) || 1500)
     };
   }
 
@@ -84,7 +94,6 @@ function getAiConfig() {
 
 async function analyzeWithGemini(base64Image, config) {
   const genAI = new GoogleGenerativeAI(config.apiKey);
-  const model = genAI.getGenerativeModel({ model: config.model });
 
   const imagePart = {
     inlineData: {
@@ -93,14 +102,41 @@ async function analyzeWithGemini(base64Image, config) {
     }
   };
 
-  try {
-    const result = await model.generateContent([ANALYSIS_PROMPT, imagePart]);
-    return result.response.text();
-  } catch (error) {
-    const message = String(error?.message || 'Gemini request failed.');
-    const isQuota = /429|quota|rate limit|resource_exhausted|too many requests/i.test(message);
-    throw createProviderError(message, isQuota ? 429 : 500, message, isQuota ? 60000 : 0);
+  const modelsToTry = [config.model, ...(config.fallbackModels || [])];
+  let lastError = null;
+
+  for (const modelName of modelsToTry) {
+    const model = genAI.getGenerativeModel({ model: modelName });
+
+    for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
+      try {
+        const result = await model.generateContent([ANALYSIS_PROMPT, imagePart]);
+        return result.response.text();
+      } catch (error) {
+        const message = String(error?.message || 'Gemini request failed.');
+        const isQuota = /429|quota|rate limit|resource_exhausted|too many requests/i.test(message);
+        const isHighDemand = /503|service unavailable|high demand|unavailable/i.test(message);
+        const isTransient = isQuota || isHighDemand;
+        const retryAfterMs = isQuota
+          ? 60000
+          : (isHighDemand ? config.baseRetryMs * Math.pow(2, attempt - 1) : 0);
+
+        lastError = createProviderError(message, isQuota ? 429 : (isHighDemand ? 503 : 500), message, retryAfterMs);
+
+        const canRetrySameModel = isTransient && attempt < config.maxAttempts;
+        if (canRetrySameModel) {
+          await new Promise((resolve) => setTimeout(resolve, retryAfterMs || config.baseRetryMs));
+          continue;
+        }
+
+        if (!isTransient) {
+          throw lastError;
+        }
+      }
+    }
   }
+
+  throw lastError || createProviderError('Gemini request failed.', 500);
 }
 
 function extractOpenAiStyleText(payload) {
