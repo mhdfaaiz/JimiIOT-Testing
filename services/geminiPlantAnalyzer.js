@@ -6,7 +6,17 @@ Please return a JSON object with the following fields:
 {
   "plantName": "Common name of the plant (or 'Unknown/Not a plant' if not applicable)",
   "scientificName": "Scientific name of the plant (or 'N/A')",
-  "soilCondition": "Dry / Damp / Wet / Good condition (choose the most accurate one)",
+  "soilCondition": "Dry / Damp / Wet / Balanced / Unknown (choose the most accurate one)",
+  "moistureContentLevel": "Very Low / Low / Moderate / High / Very High / Unknown",
+  "moisturePercent": "Estimated moisture percentage from 0-100 as a number",
+  "canGrowPlants": "true if this soil moisture can support plant growth now, otherwise false",
+  "soilSuitability": "Suitable / Marginal / Unsuitable / Unknown",
+  "soilSuitabilityReasoning": "2-3 concise sentences explaining if current moisture can support plant growth and why",
+  "recommendedPlants": [
+    "Plant or crop that can grow in this moisture condition",
+    "Plant or crop that can grow in this moisture condition",
+    "Plant or crop that can grow in this moisture condition"
+  ],
   "plantHealthRating": 0-100 (a percentage score of the overall plant health),
   "healthStatus": "Good / Dry / Sunburned / Overwatered / Diseased / Unknown",
   "detailedAnalysis": "A concise paragraph (2-3 sentences) explaining the visual findings, including leaf condition, soil appearance, and any signs of pests, discoloration, or watering issues.",
@@ -219,6 +229,16 @@ function normalizeResult(obj) {
     plantName: typeof obj.plantName === 'string' ? obj.plantName : 'Unknown/Not a plant',
     scientificName: typeof obj.scientificName === 'string' ? obj.scientificName : 'N/A',
     soilCondition: typeof obj.soilCondition === 'string' ? obj.soilCondition : 'Unknown',
+    moistureContentLevel: typeof obj.moistureContentLevel === 'string' ? obj.moistureContentLevel : 'Unknown',
+    moisturePercent: Number.isFinite(Number(obj.moisturePercent))
+      ? Math.max(0, Math.min(100, Number(obj.moisturePercent)))
+      : null,
+    canGrowPlants: typeof obj.canGrowPlants === 'boolean' ? obj.canGrowPlants : null,
+    soilSuitability: typeof obj.soilSuitability === 'string' ? obj.soilSuitability : 'Unknown',
+    soilSuitabilityReasoning: typeof obj.soilSuitabilityReasoning === 'string' ? obj.soilSuitabilityReasoning : '',
+    recommendedPlants: Array.isArray(obj.recommendedPlants)
+      ? obj.recommendedPlants.map((x) => String(x)).filter(Boolean).slice(0, 8)
+      : [],
     plantHealthRating: Number.isFinite(Number(obj.plantHealthRating))
       ? Math.max(0, Math.min(100, Number(obj.plantHealthRating)))
       : 0,

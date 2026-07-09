@@ -158,6 +158,46 @@
       animation: shimmer 2s infinite;
     }
 
+    .insight-tab {
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.02);
+      color: #c5c5d5;
+      transition: all 0.2s ease;
+    }
+
+    .insight-tab:hover {
+      border-color: rgba(185, 195, 255, 0.35);
+      color: #e4e1e9;
+      transform: translateY(-1px);
+    }
+
+    .insight-tab.active {
+      border-color: rgba(113, 137, 246, 0.45);
+      background: rgba(113, 137, 246, 0.16);
+      color: #dde1ff;
+      box-shadow: 0 8px 22px -14px rgba(113, 137, 246, 0.75);
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+      animation: fadeInPanel 0.25s ease-out;
+    }
+
+    @keyframes fadeInPanel {
+      from {
+        opacity: 0;
+        transform: translateY(4px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
     @keyframes shimmer {
       0% { background-position: -200% 0; }
       100% { background-position: 200% 0; }
@@ -382,21 +422,47 @@
                   <span class="text-[10px] text-emerald-active" id="moistureTrend">-</span>
                 </div>
               </div>
-              <div class="p-3 rounded-xl bg-glass-fill border-l-4 border-amber-warning">
-                <p class="text-label-sm text-on-surface-variant">Nitrogen</p>
+              <div class="p-3 rounded-xl bg-glass-fill border-l-4 border-secondary">
+                <p class="text-label-sm text-on-surface-variant">Soil Growability</p>
                 <div class="flex items-baseline gap-2">
-                  <span class="text-label-md font-bold text-on-surface text-lg" id="nitrogenValue">-</span>
-                  <span class="text-[10px] text-amber-warning" id="nitrogenStatus">-</span>
+                  <span class="text-label-md font-bold text-on-surface text-lg" id="soilGrowability">-</span>
+                  <span class="text-[10px] text-secondary" id="soilConfidence">-</span>
                 </div>
               </div>
             </div>
-            <div class="p-4 rounded-xl bg-primary/5 border border-primary/20">
-              <p class="text-label-md text-primary font-bold mb-1 flex items-center gap-2">
-                <span class="material-symbols-outlined text-sm">info</span> AI OBSERVATION
-              </p>
-              <p class="text-body-md text-on-surface-variant leading-relaxed italic" id="aiObservation">
-                Waiting for analysis...
-              </p>
+            <div class="p-4 rounded-xl bg-primary/5 border border-primary/20 space-y-3">
+              <div class="flex gap-2">
+                <button class="insight-tab active text-[11px] font-semibold px-3 py-1.5 rounded-lg" data-tab="moisture" type="button">Moisture Suitability</button>
+                <button class="insight-tab text-[11px] font-semibold px-3 py-1.5 rounded-lg" data-tab="plants" type="button">Plant Matches</button>
+                <button class="insight-tab text-[11px] font-semibold px-3 py-1.5 rounded-lg" data-tab="advice" type="button">AI Notes</button>
+              </div>
+
+              <div class="tab-panel active" id="tabPanel-moisture">
+                <p class="text-label-md text-primary font-bold mb-1 flex items-center gap-2">
+                  <span class="material-symbols-outlined text-sm">water_drop</span> MOISTURE CONTENT RESULT
+                </p>
+                <p class="text-body-md text-on-surface-variant leading-relaxed" id="moistureSuitabilityText">
+                  Waiting for moisture suitability analysis...
+                </p>
+              </div>
+
+              <div class="tab-panel" id="tabPanel-plants">
+                <p class="text-label-md text-primary font-bold mb-2 flex items-center gap-2">
+                  <span class="material-symbols-outlined text-sm">spa</span> SUITABLE PLANTS FOR THIS SOIL
+                </p>
+                <ul id="recommendedPlantsList" class="space-y-1 text-body-md text-on-surface-variant list-disc pl-5">
+                  <li>Waiting for AI recommendations...</li>
+                </ul>
+              </div>
+
+              <div class="tab-panel" id="tabPanel-advice">
+                <p class="text-label-md text-primary font-bold mb-1 flex items-center gap-2">
+                  <span class="material-symbols-outlined text-sm">psychology</span> AI OBSERVATION
+                </p>
+                <p class="text-body-md text-on-surface-variant leading-relaxed italic" id="aiObservation">
+                  Waiting for analysis...
+                </p>
+              </div>
             </div>
           </div>
           <div class="w-full md:w-1/2 flex flex-col bg-black/20 rounded-xl border border-glass-stroke overflow-hidden min-h-0">

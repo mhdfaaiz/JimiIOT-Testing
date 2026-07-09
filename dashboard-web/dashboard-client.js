@@ -41,6 +41,30 @@ function setText(id, text) {
   if (el) el.textContent = text;
 }
 
+function setListItems(id, items, fallbackText) {
+  const el = document.getElementById(id);
+  if (!el) return;
+
+  const list = Array.isArray(items)
+    ? items.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+
+  if (!list.length) {
+    el.innerHTML = '';
+    const li = document.createElement('li');
+    li.textContent = fallbackText;
+    el.appendChild(li);
+    return;
+  }
+
+  el.innerHTML = '';
+  list.forEach((item) => {
+    const li = document.createElement('li');
+    li.textContent = item;
+    el.appendChild(li);
+  });
+}
+
 function setVideoStats(channel, stats) {
   const ch = Number(channel);
   if (ch !== 1 && ch !== 2) return;
@@ -654,20 +678,41 @@ function displayAnalysisResult(analysis) {
   const healthBar = document.getElementById('healthBar');
   if (healthBar) healthBar.style.width = healthRating + '%';
 
-  // Update soil condition
-  const moisture = analysis.soilMoisture || Math.floor(Math.random() * 60) + 30;
-  const moistureTrend = Math.random() > 0.5 ? '↑ 2%' : '↓ 1%';
-  setText('moistureValue', moisture.toFixed(1) + '%');
-  setText('moistureTrend', moistureTrend);
+  // Moisture data comes from AI response only.
+  const moistureLevelText = String(analysis?.moistureContentLevel ?? '').trim();
+  const moisturePercent = Number(analysis?.moisturePercent);
+  const moistureValue = Number.isFinite(moisturePercent)
+    ? `${Math.max(0, Math.min(100, moisturePercent)).toFixed(1)}%`
+    : (moistureLevelText || 'Unknown');
 
-  // Update nitrogen
-  const nitrogen = analysis.nitrogenLevel || (Math.floor(Math.random() * 40) + 100);
-  setText('nitrogenValue', nitrogen + ' ppm');
-  setText('nitrogenStatus', 'STABLE');
+  setText('moistureValue', moistureValue);
+  setText('moistureTrend', moistureLevelText || 'AI estimated');
+
+  const canGrow = analysis?.canGrowPlants === true
+    ? 'YES'
+    : (analysis?.canGrowPlants === false ? 'NO' : 'CHECK');
+
+  setText('soilGrowability', canGrow);
+  setText('soilConfidence', analysis?.soilSuitability || 'AI assessed');
+
+  const suitabilityReason = String(analysis?.soilSuitabilityReasoning || '').trim();
+  const moistureSuitabilityText = suitabilityReason
+    || (analysis?.canGrowPlants === true
+      ? 'AI indicates this moisture profile can support plant growth.'
+      : (analysis?.canGrowPlants === false
+        ? 'AI indicates this moisture profile is currently not ideal for plant growth.'
+        : 'AI is still evaluating if current moisture supports plant growth.'));
+
+  setText('moistureSuitabilityText', moistureSuitabilityText);
+  setListItems(
+    'recommendedPlantsList',
+    analysis?.recommendedPlants,
+    'AI did not return plant recommendations yet.'
+  );
 
   // Update AI observation
   const observation = analysis.detailedAnalysis || 
-    "Leaf density index indicates optimal photosynthetic absorption. Recommend maintenance at 04:00 UTC.";
+    'AI did not provide detailed notes for this frame.';
   setText('aiObservation', observation);
 
   // Update analysis log
@@ -1004,6 +1049,28 @@ function setupChannelSelector() {
   });
 }
 
+function setupInsightTabs() {
+  const tabs = Array.from(document.querySelectorAll('.insight-tab[data-tab]'));
+  if (!tabs.length) return;
+
+  function activateTab(tabName) {
+    tabs.forEach((tab) => {
+      tab.classList.toggle('active', tab.dataset.tab === tabName);
+    });
+
+    const panels = document.querySelectorAll('.tab-panel');
+    panels.forEach((panel) => {
+      panel.classList.toggle('active', panel.id === `tabPanel-${tabName}`);
+    });
+  }
+
+  tabs.forEach((tab) => {
+    tab.addEventListener('click', () => activateTab(tab.dataset.tab));
+  });
+
+  activateTab('moisture');
+}
+
 /**
  * Initialize AI analysis UI
  */
@@ -1025,6 +1092,7 @@ function initializeAIAnalysis() {
 
   // Setup channel selection
   setupChannelSelector();
+  setupInsightTabs();
 
   console.log('[AI] Plant health analysis initialized');
 }
