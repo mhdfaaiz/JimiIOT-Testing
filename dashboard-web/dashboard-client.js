@@ -743,6 +743,50 @@ function displayAnalysisResult(analysis) {
 }
 
 /**
+ * Clear all AI analysis outputs and reset panel state.
+ */
+function clearAnalysisResults() {
+  setText('healthRating', '-');
+  const healthBar = document.getElementById('healthBar');
+  if (healthBar) healthBar.style.width = '0%';
+
+  setText('moistureValue', '-');
+  setText('moistureTrend', '-');
+  setText('soilGrowability', '-');
+  setText('soilConfidence', '-');
+
+  setText('moistureSuitabilityText', 'Waiting for moisture suitability analysis...');
+  setListItems('recommendedPlantsList', [], 'Waiting for AI recommendations...');
+  setText('aiObservation', 'Waiting for analysis...');
+
+  setText('aiPlantName', '-');
+  setText('aiScientificName', '-');
+
+  const status = document.getElementById('analyzeStatus');
+  if (status) status.textContent = '';
+
+  const noDataDiv = document.getElementById('aiNoData');
+  if (noDataDiv) noDataDiv.style.display = '';
+
+  const resultDiv = document.getElementById('aiAnalysisResult');
+  if (resultDiv) resultDiv.style.display = 'none';
+
+  const log = document.getElementById('analysisLog');
+  if (log) {
+    log.innerHTML = `
+      <div class="flex gap-3 text-on-surface-variant">
+        <span class="opacity-50">--:--:--</span>
+        <span class="">Waiting for analysis...</span>
+      </div>
+    `;
+  }
+
+  // Reset live frame dedupe state so the next live/manual capture always refreshes.
+  lastLiveFrameSignature = null;
+  lastLiveAnalyzeAt = 0;
+}
+
+/**
  * Send frame to API for analysis (core function used by both manual and live)
  */
 async function analyzeFrameAPI(base64Image, isLive = false, frameSignature = null) {
@@ -1078,6 +1122,11 @@ function initializeAIAnalysis() {
   const btn = document.getElementById('analyzePlantBtn');
   if (btn) {
     btn.addEventListener('click', analyzeCurrentFrame);
+  }
+
+  const clearBtn = document.getElementById('clearAnalysisBtn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', clearAnalysisResults);
   }
 
   const liveBtn = document.getElementById('liveAnalysisToggle');
